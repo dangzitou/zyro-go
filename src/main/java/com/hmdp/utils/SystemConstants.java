@@ -1,5 +1,7 @@
 package com.hmdp.utils;
 
+import java.time.format.DateTimeFormatter;
+
 public class SystemConstants {
     public static final String IMAGE_UPLOAD_DIR = "E:\\Develop\\projects\\front-end\\nginx-1.18.0-hm-dianping\\html\\hmdp\\imgs\\";
     public static final String USER_NICK_NAME_PREFIX = "user_";
