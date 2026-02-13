@@ -1,10 +1,10 @@
-# HM-DianPing (黑马点评)
+# zyro-go
 
 A Spring Boot + Redis based local lifestyle service platform, similar to Yelp/Dianping, implementing core features such as shop queries, flash sales vouchers, user check-ins, friend following, and blog likes.
 
 ## 📋 Project Overview
 
-HM-DianPing is a complete backend system for a local lifestyle service platform with the following main features:
+zyro-go is a complete backend system for a local lifestyle service platform with the following main features:
 
 - 🏪 **Shop Management**: Shop information queries, category browsing, location-based nearby shop recommendations
 - 👤 **User System**: Phone number login, user profile management, follow/unfollow functionality
@@ -288,7 +288,7 @@ This project is for learning and educational purposes only.
 
 ## 🙏 Acknowledgments
 
-Thanks to Heima Programmer for providing learning resources and project examples.
+This project is developed based on learning resources and project examples from Heima Programmer.
 
 ---
 
