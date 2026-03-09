@@ -1,6 +1,6 @@
 # zyro-go
 
-当前目录名为 `zyro-go`，但项目实际是一个基于 Spring Boot 的点评类后端服务，`pom.xml` 中的制品名为 `hm-dianping`。
+本项目是一个基于 Spring Boot 的点评类后端服务。
 
 项目围绕本地生活场景实现了商铺查询、博客探店、关注、优惠券秒杀、登录鉴权等能力，并重点演示 Redis 在缓存、分布式锁、Geo、Stream 和全局 ID 生成中的使用方式。
 
