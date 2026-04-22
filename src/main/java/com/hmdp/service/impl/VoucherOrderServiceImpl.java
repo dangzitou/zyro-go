@@ -20,8 +20,8 @@ import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import javax.annotation.PostConstruct;
-import javax.annotation.Resource;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.Resource;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
@@ -33,10 +33,10 @@ import java.util.concurrent.Executors;
 
 /**
  * <p>
- *  服务实现类
+ *  鏈嶅姟瀹炵幇绫?
  * </p>
  *
- * @author 虎哥
+ * @author 铏庡摜
  * @since 2021-12-22
  */
 @Slf4j
@@ -55,8 +55,8 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     private RedissonClient redissonClient;
 
     /**
-     * VoucherOrderServiceImpl类的代理对象
-     * 将代理对象的作用域进行提升，方便子线程取用
+     * VoucherOrderServiceImpl绫荤殑浠ｇ悊瀵硅薄
+     * 灏嗕唬鐞嗗璞＄殑浣滅敤鍩熻繘琛屾彁鍗囷紝鏂逛究瀛愮嚎绋嬪彇鐢?
      */
     private IVoucherOrderService proxy;
 
@@ -74,24 +74,24 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         public void run() {
             while(true){
                 try {
-                    //获取队列中的订单信息
+                    //鑾峰彇闃熷垪涓殑璁㈠崟淇℃伅
                     List<MapRecord<String, Object, Object>> list = stringRedisTemplate.opsForStream().read(
                             Consumer.from("g1", "c1"),
                             StreamReadOptions.empty().count(1).block(Duration.ofSeconds(2)),
                             StreamOffset.create("stream.orders", ReadOffset.lastConsumed())
                     );
-                    //判断是否获取成功
+                    //鍒ゆ柇鏄惁鑾峰彇鎴愬姛
                     if(list == null || list.isEmpty()){
-                        //如果获取失败，说明队列中没有订单信息，继续下一次循环
+                        //濡傛灉鑾峰彇澶辫触锛岃鏄庨槦鍒椾腑娌℃湁璁㈠崟淇℃伅锛岀户缁笅涓€娆″惊鐜?
                         continue;
                     }
-                    //如果获取成功，创建订单信息
+                    //濡傛灉鑾峰彇鎴愬姛锛屽垱寤鸿鍗曚俊鎭?
                     MapRecord<String, Object, Object> record = list.get(0);
                     Map<Object, Object> value = record.getValue();
                     VoucherOrder voucherOrder = BeanUtil.fillBeanWithMap(value, new VoucherOrder(), true);
-                    //创建订单
+                    //鍒涘缓璁㈠崟
                     handleVoucherOrder(voucherOrder);
-                    //确认消息已消费
+                    //纭娑堟伅宸叉秷璐?
                     stringRedisTemplate.opsForStream().acknowledge("stream.orders","g1",record.getId());
                 } catch (Exception e) {
                     log.error(e.getMessage());
@@ -103,24 +103,24 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         private void handlePendingList() {
             while(true){
                 try {
-                    //获取pending-list中的订单信息
+                    //鑾峰彇pending-list涓殑璁㈠崟淇℃伅
                     List<MapRecord<String, Object, Object>> list = stringRedisTemplate.opsForStream().read(
                             Consumer.from("g1", "c1"),
                             StreamReadOptions.empty().count(1),
                             StreamOffset.create("stream.orders", ReadOffset.from("0"))
                     );
-                    //判断是否获取成功
+                    //鍒ゆ柇鏄惁鑾峰彇鎴愬姛
                     if(list == null || list.isEmpty()){
-                        //如果获取失败，说明pending-list中没有订单信息，结束循环
+                        //濡傛灉鑾峰彇澶辫触锛岃鏄巔ending-list涓病鏈夎鍗曚俊鎭紝缁撴潫寰幆
                         break;
                     }
-                    //如果获取成功，创建订单信息
+                    //濡傛灉鑾峰彇鎴愬姛锛屽垱寤鸿鍗曚俊鎭?
                     MapRecord<String, Object, Object> record = list.get(0);
                     Map<Object, Object> value = record.getValue();
                     VoucherOrder voucherOrder = BeanUtil.fillBeanWithMap(value, new VoucherOrder(), true);
-                    //创建订单
+                    //鍒涘缓璁㈠崟
                     handleVoucherOrder(voucherOrder);
-                    //确认消息已消费
+                    //纭娑堟伅宸叉秷璐?
                     stringRedisTemplate.opsForStream().acknowledge("stream.orders","g1",record.getId());
                 } catch (Exception e) {
                     log.error(e.getMessage());
@@ -140,9 +140,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         public void run() {
             while(true){
                 try {
-                    //获取队列中的订单信息
+                    //鑾峰彇闃熷垪涓殑璁㈠崟淇℃伅
                     VoucherOrder voucherOrder = orderTasks.take();
-                    //创建订单
+                    //鍒涘缓璁㈠崟
                     handleVoucherOrder(voucherOrder);
                 } catch (Exception e) {
                     log.error(e.getMessage());
@@ -153,25 +153,25 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
     private void handleVoucherOrder(VoucherOrder voucherOrder) {
         Long userId = voucherOrder.getUserId();
-        //创建锁对象
+        //鍒涘缓閿佸璞?
         RLock lock = redissonClient.getLock("lock:order:" + userId);
-        //获取锁
+        //鑾峰彇閿?
         boolean isLock = lock.tryLock();
-        //判断是否获取锁成功
+        //鍒ゆ柇鏄惁鑾峰彇閿佹垚鍔?
         if(!isLock){
             log.error("不允许重复下单");
             return;
         }
         try {
-            // 创建订单（使用代理对象调用，是为了确保事务生效）
+            // 鍒涘缓璁㈠崟锛堜娇鐢ㄤ唬鐞嗗璞¤皟鐢紝鏄负浜嗙‘淇濅簨鍔＄敓鏁堬級
             proxy.createVoucherOrder(voucherOrder);
         } finally {
-            //释放锁
+            //閲婃斁閿?
             lock.unlock();
         }
     }
 
-    //加载lua脚本
+    //鍔犺浇lua鑴氭湰
     private static final DefaultRedisScript<Long> SECKILL_SCRIPT;
     static {
         SECKILL_SCRIPT = new DefaultRedisScript<>();
@@ -181,11 +181,11 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
     @Override
     public Result secKill(Long voucherId){
-        //用户id
+        //鐢ㄦ埛id
         Long userId = UserHolder.getUser().getId();
-        //订单id
+        //璁㈠崟id
         long orderId = redisIdWorker.nextId("order");
-        //执行lua脚本
+        //鎵цlua鑴氭湰
         Long result = stringRedisTemplate.execute(
                 SECKILL_SCRIPT,
                 Collections.emptyList(),
@@ -193,111 +193,112 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                 userId.toString(),
                 String.valueOf(orderId)
         );
-        //判断结果是否为0
+        //鍒ゆ柇缁撴灉鏄惁涓?
         int r = result.intValue();
         if(r != 0){
-            //不为0，代表没有购买资格
-            return Result.fail(r == 1 ? "库存不足" : "不能重复下单");
+            //涓嶄负0锛屼唬琛ㄦ病鏈夎喘涔拌祫鏍?
+            return Result.fail(r == 1 ? "搴撳瓨涓嶈冻" : "涓嶈兘閲嶅涓嬪崟");
         }
-        //获取代理对象(因为事务是通过代理对象来实现的)
+        //鑾峰彇浠ｇ悊瀵硅薄(鍥犱负浜嬪姟鏄€氳繃浠ｇ悊瀵硅薄鏉ュ疄鐜扮殑)
         proxy = (IVoucherOrderService) AopContext.currentProxy();
-        //返回订单id
+        //杩斿洖璁㈠崟id
         return Result.ok(orderId);
     }
 
     /*@Override
     public Result secKill(Long voucherId){
-        //执行lua脚本
+        //鎵цlua鑴氭湰
         Long result = stringRedisTemplate.execute(
                 SECKILL_SCRIPT,
                 Collections.emptyList(),
                 voucherId.toString(),
                 UserHolder.getUser().getId().toString()
         );
-        //判断结果是否为0
+        //鍒ゆ柇缁撴灉鏄惁涓?
         int r = result.intValue();
         if(r != 0){
-            //不为0，代表没有购买资格
-            return Result.fail(r == 1 ? "库存不足" : "不能重复下单");
+            //涓嶄负0锛屼唬琛ㄦ病鏈夎喘涔拌祫鏍?
+            return Result.fail(r == 1 ? "搴撳瓨涓嶈冻" : "涓嶈兘閲嶅涓嬪崟");
         }
-        //为0，有购买资格，把下单信息保存到阻塞队列
+        //涓?锛屾湁璐拱璧勬牸锛屾妸涓嬪崟淇℃伅淇濆瓨鍒伴樆濉為槦鍒?
         VoucherOrder voucherOrder = new VoucherOrder();
-        //订单id
+        //璁㈠崟id
         long orderId = redisIdWorker.nextId("order");
         voucherOrder.setId(orderId);
-        //优惠券id
+        //浼樻儬鍒竔d
         voucherOrder.setVoucherId(voucherId);
-        //用户id
+        //鐢ㄦ埛id
         Long userId = UserHolder.getUser().getId();
         voucherOrder.setUserId(userId);
         orderTasks.add(voucherOrder);
-        //获取代理对象(因为事务是通过代理对象来实现的)
+        //鑾峰彇浠ｇ悊瀵硅薄(鍥犱负浜嬪姟鏄€氳繃浠ｇ悊瀵硅薄鏉ュ疄鐜扮殑)
         proxy = (IVoucherOrderService) AopContext.currentProxy();
-        //返回订单id
+        //杩斿洖璁㈠崟id
         return Result.ok(orderId);
     }*/
 
     /*@Override
     public Result secKill(Long voucherId) {
-        //查询优惠券是否存在
+        //鏌ヨ浼樻儬鍒告槸鍚﹀瓨鍦?
         SeckillVoucher voucher = seckillVoucherService.getById(voucherId);
         if(voucher == null){
-            return Result.fail("优惠券不存在");
+            return Result.fail("浼樻儬鍒镐笉瀛樺湪");
         }
-        //查询秒杀是否已开始
+        //鏌ヨ绉掓潃鏄惁宸插紑濮?
         if(voucher.getBeginTime().isAfter(LocalDateTime.now())){
-            return Result.fail("秒杀尚未开始");
+            return Result.fail("绉掓潃灏氭湭寮€濮?);
         }
-        //查询秒杀是否已结束
+        //鏌ヨ绉掓潃鏄惁宸茬粨鏉?
         if(voucher.getEndTime().isBefore(LocalDateTime.now())){
-            return Result.fail("秒杀已结束");
+            return Result.fail("绉掓潃宸茬粨鏉?);
         }
 
-        //查询库存是否充足
+        //鏌ヨ搴撳瓨鏄惁鍏呰冻
         if(voucher.getStock() < 1){
-            return Result.fail("库存不足");
+            return Result.fail("搴撳瓨涓嶈冻");
         }
 
         Long userId = UserHolder.getUser().getId();
-        //创建锁对象
+        //鍒涘缓閿佸璞?
         //SimpleRedisLock lock = new SimpleRedisLock("order:" + userId, stringRedisTemplate);
         RLock lock = redissonClient.getLock("lock:order:" + userId);
-        //获取锁
+        //鑾峰彇閿?
         boolean isLock = lock.tryLock();
-        //判断是否获取锁成功
+        //鍒ゆ柇鏄惁鑾峰彇閿佹垚鍔?
         if(!isLock){
-            return Result.fail("不允许重复下单");
+            return Result.fail("涓嶅厑璁搁噸澶嶄笅鍗?);
         }
         try {
-            //获取代理对象(因为事务是通过代理对象来实现的)
+            //鑾峰彇浠ｇ悊瀵硅薄(鍥犱负浜嬪姟鏄€氳繃浠ｇ悊瀵硅薄鏉ュ疄鐜扮殑)
             IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();
-            //执行下单
+            //鎵ц涓嬪崟
             return proxy.createVoucherOrder(voucherId);
         } finally {
-            //释放锁
+            //閲婃斁閿?
             lock.unlock();
         }
     }*/
 
     @Transactional
     public void createVoucherOrder(VoucherOrder voucherOrder) {
-        //一人一单
+        //涓€浜轰竴鍗?
         Long userId = voucherOrder.getUserId();
-        int count = query().eq("user_id", userId).eq("voucher_id", voucherOrder.getVoucherId()).count();
+        long count = query().eq("user_id", userId).eq("voucher_id", voucherOrder.getVoucherId()).count();
         if(count > 0){
             log.error("您已购买过一次");
         }
 
-        //库存扣减
+        //搴撳瓨鎵ｅ噺
         boolean success = seckillVoucherService.update()
                 .setSql("stock = stock - 1")
                 .eq("voucher_id", voucherOrder.getVoucherId())
-                .gt("stock", 0)//乐观锁
+                .gt("stock", 0)//涔愯閿?
                 .update();
         if(!success){
-            log.error("库存不足");
+            log.error("搴撳瓨涓嶈冻");
         }
-        //保存订单
+        //淇濆瓨璁㈠崟
         save(voucherOrder);
     }
 }
+

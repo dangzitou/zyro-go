@@ -1,0 +1,192 @@
+package com.hmdp.ai;
+
+import cn.hutool.core.util.StrUtil;
+import cn.hutool.json.JSONUtil;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.hmdp.dto.Result;
+import com.hmdp.dto.ShopRecommendationDTO;
+import com.hmdp.entity.Blog;
+import com.hmdp.entity.Shop;
+import com.hmdp.entity.Voucher;
+import com.hmdp.service.IBlogService;
+import com.hmdp.service.IShopRecommendationService;
+import com.hmdp.service.IShopService;
+import com.hmdp.service.IVoucherService;
+import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.stereotype.Component;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.List;
+import java.util.stream.Collectors;
+
+@Component
+public class LocalLifeAgentTools {
+
+    private static final int DEFAULT_LIMIT = 5;
+
+    private final IShopService shopService;
+    private final IVoucherService voucherService;
+    private final IBlogService blogService;
+    private final IShopRecommendationService shopRecommendationService;
+    private final AgentTraceContext traceContext;
+
+    public LocalLifeAgentTools(IShopService shopService, IVoucherService voucherService,
+                               IBlogService blogService, IShopRecommendationService shopRecommendationService,
+                               AgentTraceContext traceContext) {
+        this.shopService = shopService;
+        this.voucherService = voucherService;
+        this.blogService = blogService;
+        this.shopRecommendationService = shopRecommendationService;
+        this.traceContext = traceContext;
+    }
+
+    @Tool(name = "search_shops", description = "Search shops by keyword and optional category, return concise shop cards.")
+    public List<ShopCard> searchShops(
+            @ToolParam(required = false, description = "Keyword such as 火锅, 咖啡, 烧烤") String keyword,
+            @ToolParam(required = false, description = "Shop type id if the user already specified a category") Integer typeId,
+            @ToolParam(required = false, description = "Page number starting from 1") Integer current) {
+        int pageNo = current == null ? 1 : Math.max(1, current);
+        Page<Shop> page = shopService.query()
+                .like(StrUtil.isNotBlank(keyword), "name", keyword)
+                .eq(typeId != null, "type_id", typeId)
+                .page(new Page<>(pageNo, DEFAULT_LIMIT));
+        List<ShopCard> result = page.getRecords().stream()
+                .map(this::toShopCard)
+                .collect(Collectors.toList());
+        traceContext.record("search_shops(keyword=" + safe(keyword) + ", typeId=" + safe(typeId) + ", current=" + pageNo + ") -> " + result.size() + " hit(s)");
+        return result;
+    }
+
+    @Tool(name = "get_shop_detail", description = "Fetch one shop detail for factual fields such as price, score, address and opening hours.")
+    public ShopDetail getShopDetail(@ToolParam(description = "Shop id from previous search results") Long shopId) {
+        Shop shop = shopService.getById(shopId);
+        ShopDetail detail = shop == null ? null : new ShopDetail(
+                shop.getId(),
+                shop.getName(),
+                shop.getArea(),
+                shop.getAddress(),
+                shop.getAvgPrice(),
+                normalizeScore(shop.getScore()),
+                shop.getComments(),
+                shop.getOpenHours()
+        );
+        traceContext.record("get_shop_detail(shopId=" + shopId + ") -> " + (detail == null ? "not_found" : "ok"));
+        return detail;
+    }
+
+    @Tool(name = "get_shop_coupons", description = "Fetch active coupons of a shop. Useful when the user asks about deals or discounts.")
+    public List<CouponCard> getShopCoupons(@ToolParam(description = "Shop id from previous search or recommendation results") Long shopId) {
+        List<CouponCard> result = loadVouchers(shopId).stream()
+                .sorted(Comparator.comparing(Voucher::getPayValue, Comparator.nullsLast(Long::compareTo)))
+                .limit(DEFAULT_LIMIT)
+                .map(voucher -> new CouponCard(
+                        voucher.getId(),
+                        voucher.getTitle(),
+                        voucher.getSubTitle(),
+                        voucher.getPayValue(),
+                        voucher.getActualValue(),
+                        voucher.getRules()
+                ))
+                .collect(Collectors.toList());
+        traceContext.record("get_shop_coupons(shopId=" + shopId + ") -> " + result.size() + " coupon(s)");
+        return result;
+    }
+
+    @Tool(name = "get_hot_blogs", description = "Fetch recent hot review blogs for trend and social proof signals.")
+    public List<BlogCard> getHotBlogs(@ToolParam(required = false, description = "Number of blog cards to return, default 5") Integer limit) {
+        int size = limit == null ? DEFAULT_LIMIT : Math.max(1, Math.min(limit, 10));
+        List<BlogCard> result = blogService.query()
+                .orderByDesc("liked")
+                .orderByDesc("create_time")
+                .last("LIMIT " + size)
+                .list()
+                .stream()
+                .map(blog -> new BlogCard(
+                        blog.getId(),
+                        StrUtil.blankToDefault(blog.getTitle(), "探店笔记"),
+                        abbreviate(blog.getContent(), 120),
+                        blog.getLiked(),
+                        blog.getShopId()
+                ))
+                .collect(Collectors.toList());
+        traceContext.record("get_hot_blogs(limit=" + size + ") -> " + result.size() + " blog(s)");
+        return result;
+    }
+
+    @Tool(name = "recommend_shops", description = "Recommend shops with business-side ranking based on keyword, budget, location and coupon preference.")
+    public List<ShopRecommendationDTO> recommendShops(
+            @ToolParam(required = false, description = "Keyword such as 火锅, 咖啡, 烧烤") String keyword,
+            @ToolParam(required = false, description = "Shop type id if available") Integer typeId,
+            @ToolParam(required = false, description = "Maximum budget in RMB") Long maxBudget,
+            @ToolParam(required = false, description = "Longitude of the user") Double x,
+            @ToolParam(required = false, description = "Latitude of the user") Double y,
+            @ToolParam(required = false, description = "Whether only shops with coupons are acceptable") Boolean couponOnly,
+            @ToolParam(required = false, description = "Number of recommendation items to return, default 5") Integer limit) {
+        List<ShopRecommendationDTO> result = shopRecommendationService.recommendShops(keyword, typeId, maxBudget, x, y, couponOnly, limit);
+        traceContext.record("recommend_shops(keyword=" + safe(keyword) + ", typeId=" + safe(typeId) + ", budget=" + safe(maxBudget)
+                + ", couponOnly=" + safe(couponOnly) + ", limit=" + safe(limit) + ") -> " + result.size() + " recommendation(s)");
+        return result;
+    }
+
+    private List<Voucher> loadVouchers(Long shopId) {
+        Result result = voucherService.queryVoucherOfShop(shopId);
+        Object data = result.getData();
+        if (!(data instanceof List<?> rawList)) {
+            return Collections.emptyList();
+        }
+        List<Voucher> vouchers = new ArrayList<>(rawList.size());
+        for (Object item : rawList) {
+            if (item instanceof Voucher voucher) {
+                vouchers.add(voucher);
+                continue;
+            }
+            vouchers.add(JSONUtil.toBean(JSONUtil.parseObj(item), Voucher.class));
+        }
+        return vouchers;
+    }
+
+    private ShopCard toShopCard(Shop shop) {
+        return new ShopCard(
+                shop.getId(),
+                shop.getName(),
+                shop.getArea(),
+                shop.getAddress(),
+                shop.getAvgPrice(),
+                normalizeScore(shop.getScore()),
+                shop.getOpenHours()
+        );
+    }
+
+    private Double normalizeScore(Integer score) {
+        return score == null ? null : score / 10.0D;
+    }
+
+    private String safe(Object value) {
+        return value == null ? "-" : String.valueOf(value);
+    }
+
+    private String abbreviate(String text, int maxLength) {
+        if (text == null || text.length() <= maxLength) {
+            return text;
+        }
+        return text.substring(0, maxLength) + "...";
+    }
+
+    public record ShopCard(Long shopId, String name, String area, String address, Long avgPrice,
+                           Double score, String openHours) {
+    }
+
+    public record ShopDetail(Long shopId, String name, String area, String address, Long avgPrice,
+                             Double score, Integer comments, String openHours) {
+    }
+
+    public record CouponCard(Long voucherId, String title, String subTitle, Long payValue,
+                             Long actualValue, String rules) {
+    }
+
+    public record BlogCard(Long blogId, String title, String snippet, Integer liked, Long shopId) {
+    }
+}

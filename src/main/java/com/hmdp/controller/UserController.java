@@ -10,18 +10,16 @@ import com.hmdp.entity.UserInfo;
 import com.hmdp.service.IUserInfoService;
 import com.hmdp.service.IUserService;
 import com.hmdp.utils.UserHolder;
+import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 
-import javax.annotation.Resource;
-import javax.servlet.http.HttpSession;
-
 /**
  * <p>
- * 前端控制器
+ * 鍓嶇鎺у埗鍣?
  * </p>
  *
- * @author 虎哥
+ * @author 铏庡摜
  * @since 2021-12-22
  */
 @Slf4j
@@ -36,29 +34,29 @@ public class UserController {
     private IUserInfoService userInfoService;
 
     /**
-     * 发送手机验证码
+     * 鍙戦€佹墜鏈洪獙璇佺爜
      */
     @PostMapping("code")
-    public Result sendCode(@RequestParam("phone") String phone, HttpSession session) {
-        return userService.sendCode(phone, session);
+    public Result sendCode(@RequestParam("phone") String phone) {
+        return userService.sendCode(phone);
     }
 
     /**
-     * 登录功能
-     * @param loginForm 登录参数，包含手机号、验证码；或者手机号、密码
+     * 鐧诲綍鍔熻兘
+     * @param loginForm 鐧诲綍鍙傛暟锛屽寘鍚墜鏈哄彿銆侀獙璇佺爜锛涙垨鑰呮墜鏈哄彿銆佸瘑鐮?
      */
     @PostMapping("/login")
-    public Result login(@RequestBody LoginFormDTO loginForm, HttpSession session){
-        return userService.login(loginForm, session);
+    public Result login(@RequestBody LoginFormDTO loginForm){
+        return userService.login(loginForm);
     }
 
     /**
-     * 登出功能
-     * @return 无
+     * 鐧诲嚭鍔熻兘
+     * @return 鏃?
      */
     @PostMapping("/logout")
     public Result logout(){
-        //用户退出登录，删除session中保存的用户信息
+        //鐢ㄦ埛閫€鍑虹櫥褰曪紝鍒犻櫎session涓繚瀛樼殑鐢ㄦ埛淇℃伅
         return userService.logout();
     }
 
@@ -70,27 +68,27 @@ public class UserController {
 
     @GetMapping("/info/{id}")
     public Result info(@PathVariable("id") Long userId){
-        // 查询详情
+        // 鏌ヨ璇︽儏
         UserInfo info = userInfoService.getById(userId);
         if (info == null) {
-            // 没有详情，应该是第一次查看详情
+            // 娌℃湁璇︽儏锛屽簲璇ユ槸绗竴娆℃煡鐪嬭鎯?
             return Result.ok();
         }
         info.setCreateTime(null);
         info.setUpdateTime(null);
-        // 返回
+        // 杩斿洖
         return Result.ok(info);
     }
 
     @GetMapping("/{id}")
     public Result queryUserById(@PathVariable("id") Long userId){
-        // 查询详情
+        // 鏌ヨ璇︽儏
         User user = userService.getById(userId);
         if (user == null) {
             return Result.ok();
         }
         UserDTO userDTO = BeanUtil.copyProperties(user, UserDTO.class);
-        // 返回
+        // 杩斿洖
         return Result.ok(userDTO);
     }
 
@@ -104,3 +102,4 @@ public class UserController {
         return userService.signCount();
     }
 }
+

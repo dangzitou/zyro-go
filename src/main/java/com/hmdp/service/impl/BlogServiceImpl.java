@@ -26,7 +26,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.stereotype.Service;
 
-import javax.annotation.Resource;
+import jakarta.annotation.Resource;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -38,10 +38,10 @@ import static com.hmdp.utils.RedisConstants.FEED_KEY;
 
 /**
  * <p>
- *  服务实现类
+ *  鏈嶅姟瀹炵幇绫?
  * </p>
  *
- * @author 虎哥
+ * @author 铏庡摜
  * @since 2021-12-22
  */
 @Slf4j
@@ -58,19 +58,19 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
 
     @Override
     public Result queryHotBlog(Integer current) {
-        // 根据用户查询
+        // 鏍规嵁鐢ㄦ埛鏌ヨ
         Page<Blog> page = query()
                 .orderByDesc("liked")
                 .page(new Page<>(current, SystemConstants.MAX_PAGE_SIZE));
-        // 获取当前页数据
+        // 鑾峰彇褰撳墠椤垫暟鎹?
         List<Blog> records = page.getRecords();
-        // 查询用户
+        // 鏌ヨ鐢ㄦ埛
         records.forEach(blog ->{
             Long userId = blog.getUserId();
             User user = userService.getById(userId);
             blog.setName(user.getNickName());
             blog.setIcon(user.getIcon());
-            //查询点赞状态
+            //鏌ヨ鐐硅禐鐘舵€?
             isBlogLiked(blog);
         });
         return Result.ok(records);
@@ -78,16 +78,16 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
 
     @Override
     public Result queryByBlogId(Long id) {
-        //查询blog
+        //鏌ヨblog
         Blog blog = getById(id);
         if (blog == null){
-            return Result.fail("博文不存在");
+            return Result.fail("博客不存在");
         }
-        //查询用户
+        //鏌ヨ鐢ㄦ埛
         User user = userService.getById(blog.getUserId());
         blog.setName(user.getNickName());
         blog.setIcon(user.getIcon());
-        //查询点赞状态
+        //鏌ヨ鐐硅禐鐘舵€?
         isBlogLiked(blog);
         return Result.ok(blog);
     }
@@ -95,12 +95,12 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
     private void isBlogLiked(Blog blog) {
         UserDTO user = UserHolder.getUser();
         if (user == null){
-            //用户未登录，直接返回
+            //鐢ㄦ埛鏈櫥褰曪紝鐩存帴杩斿洖
             return;
         }
-        //获取登录用户
+        //鑾峰彇鐧诲綍鐢ㄦ埛
         Long userId = user.getId();
-        //判断是否点赞
+        //鍒ゆ柇鏄惁鐐硅禐
         String key = BLOG_LIKED_KEY + blog.getId();
         Double score = stringRedisTemplate.opsForZSet().score(key, userId.toString());
         blog.setIsLike(score != null);
@@ -108,20 +108,20 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
 
     @Override
     public Result likeBlog(Long id) {
-        //获取用户id
+        //鑾峰彇鐢ㄦ埛id
         Long userId = UserHolder.getUser().getId();
-        //判断用户是否已经点赞
+        //鍒ゆ柇鐢ㄦ埛鏄惁宸茬粡鐐硅禐
         String key = BLOG_LIKED_KEY + id;
         Double score = stringRedisTemplate.opsForZSet().score(key, userId.toString());
 
         if (score == null){
-            //如果未点赞，点赞数加一，并保存用户到redis集合
+            //濡傛灉鏈偣璧烇紝鐐硅禐鏁板姞涓€锛屽苟淇濆瓨鐢ㄦ埛鍒皉edis闆嗗悎
             boolean isSuccess = update().setSql("liked = liked + 1").eq("id", id).update();
             if (isSuccess){
                 stringRedisTemplate.opsForZSet().add(key, userId.toString(), System.currentTimeMillis());
             }
         } else {
-            //如果已点赞，点赞数减一
+            //濡傛灉宸茬偣璧烇紝鐐硅禐鏁板噺涓€
             boolean isSuccess = update().setSql("liked = liked - 1").eq("id", id).update();
             if (isSuccess) {
                 stringRedisTemplate.opsForZSet().remove(key, userId.toString());
@@ -133,15 +133,15 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
     @Override
     public Result queryBlogLikes(Long id) {
         String key = BLOG_LIKED_KEY + id;
-        //查询top5点赞用户
+        //鏌ヨtop5鐐硅禐鐢ㄦ埛
         Set<String> top5 = stringRedisTemplate.opsForZSet().range(key, 0, 4);
         if (top5 == null || top5.isEmpty()){
             return Result.ok(Collections.emptyList());
         }
-        //解析用户id
+        //瑙ｆ瀽鐢ㄦ埛id
         List<Long> ids = top5.stream().map(Long::valueOf).collect(Collectors.toList());
         String idStr = StrUtil.join(",", ids);
-        //根据用户id查询用户并转换为DTO
+        //鏍规嵁鐢ㄦ埛id鏌ヨ鐢ㄦ埛骞惰浆鎹负DTO
         List<UserDTO> userDTOS = userService.query()
                 .in("id", ids)
                 .last("ORDER BY FIELD(id," + idStr + ")").list()
@@ -153,36 +153,36 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
 
     @Override
     public Result saveBlog(Blog blog) {
-        // 获取登录用户
+        // 鑾峰彇鐧诲綍鐢ㄦ埛
         UserDTO user = UserHolder.getUser();
         blog.setUserId(user.getId());
-        // 保存探店博文
+        // 淇濆瓨鎺㈠簵鍗氭枃
         boolean isSuccess = save(blog);
         if(isSuccess){
-            //查询笔记作者的所有粉丝
+            //鏌ヨ绗旇浣滆€呯殑鎵€鏈夌矇涓?
             List<Follow> fans = followService.query().eq("follow_user_id", user.getId()).list();
-            //推送笔记id给所有粉丝
+            //鎺ㄩ€佺瑪璁癷d缁欐墍鏈夌矇涓?
             for (Follow fan : fans) {
                 stringRedisTemplate.opsForZSet().add(FEED_KEY + fan.getUserId(), blog.getId().toString(), System.currentTimeMillis());
             }
             return Result.ok(blog.getId());
         }
-        return Result.fail("笔记保存失败");
+        return Result.fail("绗旇淇濆瓨澶辫触");
     }
 
     @Override
     public Result queryBlogOfFollow(Long max, Integer offset) {
         Long userId = UserHolder.getUser().getId();
         String key = FEED_KEY + userId;
-        //查询收件箱 ZREVRANGEBYSCORE key Max Min WITHSCO
+        //鏌ヨ鏀朵欢绠?ZREVRANGEBYSCORE key Max Min WITHSCO
         Set<ZSetOperations.TypedTuple<String>> typedTuples = stringRedisTemplate.opsForZSet()
                 .reverseRangeByScoreWithScores(key, 0, max, offset, 2);
         if (typedTuples == null || typedTuples.isEmpty()){
-            log.info("没有查询到关注者的笔记");
+            log.info("娌℃湁鏌ヨ鍒板叧娉ㄨ€呯殑绗旇");
             return Result.ok(Collections.emptyList());
         }
-        log.info("查询到关注者的笔记，数量：{}", typedTuples.size());
-        //解析数据：blogId、score（时间戳）
+        log.info("鏌ヨ鍒板叧娉ㄨ€呯殑绗旇锛屾暟閲忥細{}", typedTuples.size());
+        //瑙ｆ瀽鏁版嵁锛歜logId銆乻core锛堟椂闂存埑锛?
         ArrayList<Object> ids = new ArrayList<>(typedTuples.size());
         long minTime = 0;
         int os = 1;
@@ -198,17 +198,17 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         }
         String idStr = StrUtil.join(",", ids);
         log.info("ids:{}", ids);
-        //根据id查询blog
+        //鏍规嵁id鏌ヨblog
         List<Blog> blogs = query().in("id", ids).last("ORDER BY FIELD(id," + idStr + ")").list();
         for (Blog blog : blogs) {
-            //查询blog有关的用户
+            //鏌ヨblog鏈夊叧鐨勭敤鎴?
             User user = userService.getById(blog.getUserId());
             blog.setName(user.getNickName());
             blog.setIcon(user.getIcon());
-            //查询blog是否被点赞
+            //鏌ヨblog鏄惁琚偣璧?
             isBlogLiked(blog);
         }
-        //封装并返回
+        //灏佽骞惰繑鍥?
         ScrollResult r = new ScrollResult();
         log.info("blogs:{}", blogs);
         r.setList(blogs);
@@ -217,3 +217,4 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         return Result.ok(r);
     }
 }
+

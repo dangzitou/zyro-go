@@ -6,14 +6,14 @@ import com.hmdp.entity.Voucher;
 import com.hmdp.service.IVoucherService;
 import org.springframework.web.bind.annotation.*;
 
-import javax.annotation.Resource;
+import jakarta.annotation.Resource;
 
 /**
  * <p>
- *  前端控制器
+ *  鍓嶇鎺у埗鍣?
  * </p>
  *
- * @author 虎哥
+ * @author 铏庡摜
  * @since 2021-12-22
  */
 @RestController
@@ -24,9 +24,9 @@ public class VoucherController {
     private IVoucherService voucherService;
 
     /**
-     * 新增普通券
-     * @param voucher 优惠券信息
-     * @return 优惠券id
+     * 鏂板鏅€氬埜
+     * @param voucher 浼樻儬鍒镐俊鎭?
+     * @return 浼樻儬鍒竔d
      */
     @PostMapping
     public Result addVoucher(@RequestBody Voucher voucher) {
@@ -35,9 +35,9 @@ public class VoucherController {
     }
 
     /**
-     * 新增秒杀券
-     * @param voucher 优惠券信息，包含秒杀信息
-     * @return 优惠券id
+     * 鏂板绉掓潃鍒?
+     * @param voucher 浼樻儬鍒镐俊鎭紝鍖呭惈绉掓潃淇℃伅
+     * @return 浼樻儬鍒竔d
      */
     @PostMapping("seckill")
     public Result addSeckillVoucher(@RequestBody Voucher voucher) {
@@ -46,12 +46,13 @@ public class VoucherController {
     }
 
     /**
-     * 查询店铺的优惠券列表
-     * @param shopId 店铺id
-     * @return 优惠券列表
+     * 鏌ヨ搴楅摵鐨勪紭鎯犲埜鍒楄〃
+     * @param shopId 搴楅摵id
+     * @return 浼樻儬鍒稿垪琛?
      */
     @GetMapping("/list/{shopId}")
     public Result queryVoucherOfShop(@PathVariable("shopId") Long shopId) {
        return voucherService.queryVoucherOfShop(shopId);
     }
 }
+

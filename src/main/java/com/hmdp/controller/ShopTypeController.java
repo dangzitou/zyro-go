@@ -8,15 +8,15 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import javax.annotation.Resource;
+import jakarta.annotation.Resource;
 import java.util.List;
 
 /**
  * <p>
- * 前端控制器
+ * 鍓嶇鎺у埗鍣?
  * </p>
  *
- * @author 虎哥
+ * @author 铏庡摜
  * @since 2021-12-22
  */
 @RestController
@@ -30,3 +30,4 @@ public class ShopTypeController {
         return typeService.queryTypeList();
     }
 }
+

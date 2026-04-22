@@ -21,7 +21,7 @@ import org.springframework.data.redis.domain.geo.GeoReference;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import javax.annotation.Resource;
+import jakarta.annotation.Resource;
 
 import java.time.LocalDateTime;
 import java.util.Collections;
@@ -35,10 +35,10 @@ import static com.hmdp.utils.RedisConstants.*;
 
 /**
  * <p>
- *  服务实现类
+ *  鏈嶅姟瀹炵幇绫?
  * </p>
  *
- * @author 虎哥
+ * @author 铏庡摜
  * @since 2021-12-22
  */
 @Service
@@ -51,17 +51,17 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 
 
     /**
-     * 根据id查询商铺信息
-     * @param id 商铺id
-     * @return 商铺详情数据
+     * 鏍规嵁id鏌ヨ鍟嗛摵淇℃伅
+     * @param id 鍟嗛摵id
+     * @return 鍟嗛摵璇︽儏鏁版嵁
      */
     @Override
     public Result queryShopById(Long id) {
-        //解决缓存穿透
+        //瑙ｅ喅缂撳瓨绌块€?
         //Shop shop = cacheClient.queryWithPassThrough(CACHE_SHOP_KEY, id, Shop.class, this::getById, CACHE_SHOP_TTL, TimeUnit.MINUTES);
-        //互斥锁解决缓存击穿
+        //浜掓枼閿佽В鍐崇紦瀛樺嚮绌?
         Shop shop = cacheClient.queryWithMutex(CACHE_SHOP_KEY, LOCK_SHOP_KEY, id, Shop.class, this::getById, CACHE_SHOP_TTL, TimeUnit.MINUTES);
-        //逻辑过期时间解决缓存击穿
+        //閫昏緫杩囨湡鏃堕棿瑙ｅ喅缂撳瓨鍑荤┛
         //Shop shop = cacheClient.queryWithLogicalExpireTime(CACHE_SHOP_KEY, LOCK_SHOP_KEY, id, Shop.class, this::getById, 20L, TimeUnit.SECONDS);
         if(shop == null){
             return Result.fail("商铺不存在");
@@ -70,21 +70,21 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
     }
 
     /**
-     * 更新商铺信息
-     * @param shop 商铺数据
-     * @return 无
+     * 鏇存柊鍟嗛摵淇℃伅
+     * @param shop 鍟嗛摵鏁版嵁
+     * @return 鏃?
      */
     @Override
     @Transactional
     public Result update(Shop shop) {
-        //校验商铺id
+        //鏍￠獙鍟嗛摵id
         Long id = shop.getId();
         if(id == null){
-            return Result.fail("商铺id不能为空");
+            return Result.fail("鍟嗛摵id涓嶈兘涓虹┖");
         }
-        //1.更新数据库
+        //1.鏇存柊鏁版嵁搴?
         updateById(shop);
-        //2.删除缓存
+        //2.鍒犻櫎缂撳瓨
         String key = CACHE_SHOP_KEY + shop.getId();
         stringRedisTemplate.delete(key);
         return Result.ok();
@@ -92,16 +92,16 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
 
     @Override
     public Result queryShopByType(Integer typeId, Integer current, Double x, Double y) {
-        //判断是否需要根据坐标查询
+        //鍒ゆ柇鏄惁闇€瑕佹牴鎹潗鏍囨煡璇?
         if(x == null || y == null){
-            //不需要坐标查询，按照数据库查询
+            //涓嶉渶瑕佸潗鏍囨煡璇紝鎸夌収鏁版嵁搴撴煡璇?
             Page<Shop> page = query().eq("type_id", typeId).page(new Page<>(current, SystemConstants.DEFAULT_PAGE_SIZE));
             return Result.ok(page);
         }
-        //计算分页参数
+        //璁＄畻鍒嗛〉鍙傛暟
         int from = (current - 1) * SystemConstants.DEFAULT_PAGE_SIZE;
         int end = current * SystemConstants.DEFAULT_PAGE_SIZE;
-        //查询redis，按照距离排序，分页。结果：shopId、distance
+        //鏌ヨredis锛屾寜鐓ц窛绂绘帓搴忥紝鍒嗛〉銆傜粨鏋滐細shopId銆乨istance
         String key = SHOP_GEO_KEY + typeId;
         GeoResults<RedisGeoCommands.GeoLocation<String>> results = stringRedisTemplate.opsForGeo().search(
                 key,
@@ -109,24 +109,24 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
                 new Distance(5000),
                 RedisGeoCommands.GeoSearchCommandArgs.newGeoSearchArgs().includeDistance().limit(end)
         );
-        //判断是否有结果
+        //鍒ゆ柇鏄惁鏈夌粨鏋?
         if(results == null){
             return Result.ok(Collections.emptyList());
         }
-        //判断分页是否有数据
+        //鍒ゆ柇鍒嗛〉鏄惁鏈夋暟鎹?
         if(results.getContent().size() <= from){
             return Result.ok(Collections.emptyList());
         }
-        //解析出id
+        //瑙ｆ瀽鍑篿d
         List<GeoResult<RedisGeoCommands.GeoLocation<String>>> list = results.getContent().stream().skip(from).collect(Collectors.toList());
         List<Long> ids = list.stream().map(
                 result -> Long.parseLong(result.getContent().getName())).collect(Collectors.toList()
         );
-        //根据id查询shop
+        //鏍规嵁id鏌ヨshop
         String idStr = StrUtil.join(",", ids);
         List<Shop> shops = query().in("id", ids).last("ORDER BY FIELD(id," + idStr + ")").list();
         for (int i = 0; i < shops.size(); i++) {
-            //取出距离
+            //鍙栧嚭璺濈
             GeoResult<RedisGeoCommands.GeoLocation<String>> result = list.get(i);
             Distance distance = result.getDistance();
             shops.get(i).setDistance(distance.getValue());
@@ -134,3 +134,4 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         return Result.ok(shops);
     }
 }
+

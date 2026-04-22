@@ -1,0 +1,36 @@
+server:
+  shutdown: graceful
+  tomcat:
+    threads:
+      max: 500
+      min-spare: 50
+    accept-count: 2000
+
+logging:
+  level:
+    com.hmdp: info
+    org.springframework.ai: info
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+
+hmdp:
+  redisson:
+    enabled: true
+  ai:
+    enabled: true
+    planner-enabled: true
+    planner-validation-enabled: true
+    recursive-tool-loop-enabled: true
+    rag-enabled: true
+    rate-limit:
+      enabled: true
+      window-seconds: 60
+      chat-max-requests: 60
+      stream-max-requests: 20
+    audit:
+      enabled: true
+      include-answer: false

@@ -13,7 +13,7 @@ import com.hmdp.utils.UserHolder;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
-import javax.annotation.Resource;
+import jakarta.annotation.Resource;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
@@ -22,10 +22,10 @@ import java.util.stream.Collectors;
 
 /**
  * <p>
- *  服务实现类
+ *  鏈嶅姟瀹炵幇绫?
  * </p>
  *
- * @author 虎哥
+ * @author 铏庡摜
  * @since 2021-12-22
  */
 @Service
@@ -38,24 +38,24 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
 
     @Override
     public Result follow(Long followUserId, Boolean isFollow) {
-        //获取登录用户
+        //鑾峰彇鐧诲綍鐢ㄦ埛
         Long userId = UserHolder.getUser().getId();
-        //判断是关注还是取关
+        //鍒ゆ柇鏄叧娉ㄨ繕鏄彇鍏?
         if (isFollow) {
-            //关注，新增数据
+            //鍏虫敞锛屾柊澧炴暟鎹?
             Follow follow = new Follow();
             follow.setUserId(userId);
             follow.setFollowUserId(followUserId);
             boolean isSuccess = save(follow);
-            //保存成功后，在redis中添加一条记录，key：follow:userId value：followUserId
+            //淇濆瓨鎴愬姛鍚庯紝鍦╮edis涓坊鍔犱竴鏉¤褰曪紝key锛歠ollow:userId value锛歠ollowUserId
             if (isSuccess) {
                 stringRedisTemplate.opsForSet().add("follow:" + userId, followUserId.toString());
             }
         } else {
-            //取关，删除数据
+            //鍙栧叧锛屽垹闄ゆ暟鎹?
             boolean isSuccess = remove(new QueryWrapper<Follow>()
                     .eq("user_id",userId).eq("follow_user_id",followUserId));
-            //取关成功后，在redis中删除一条记录，key：follow:userId value：followUserId
+            //鍙栧叧鎴愬姛鍚庯紝鍦╮edis涓垹闄や竴鏉¤褰曪紝key锛歠ollow:userId value锛歠ollowUserId
             if(isSuccess){
                 stringRedisTemplate.opsForSet().remove("follow:" + userId, followUserId.toString());
             }
@@ -66,25 +66,25 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
     @Override
     public Result isFollow(Long followUserId) {
         Long userId = UserHolder.getUser().getId();
-        Integer count = query().eq("user_id", userId).eq("follow_user_id", followUserId).count();
+        long count = query().eq("user_id", userId).eq("follow_user_id", followUserId).count();
         return Result.ok(count > 0);
     }
 
     @Override
     public Result followCommons(Long followUserId) {
-        //获取登录用户
+        //鑾峰彇鐧诲綍鐢ㄦ埛
         Long userId = UserHolder.getUser().getId();
-        //求交集
+        //姹備氦闆?
         String key1 = "follow:" + userId;
         String key2 = "follow:" + followUserId;
         Set<String> commons = stringRedisTemplate.opsForSet().intersect(key1, key2);
         if (commons == null || commons.isEmpty()) {
-            //没有共同关注
+            //娌℃湁鍏卞悓鍏虫敞
             return Result.ok(Collections.emptyList());
         }
-        //解析id集合
+        //瑙ｆ瀽id闆嗗悎
         List<Long> ids = commons.stream().map(Long::valueOf).collect(Collectors.toList());
-        //查询用户
+        //鏌ヨ鐢ㄦ埛
         List<UserDTO> users = userService.listByIds(ids)
                 .stream()
                 .map(user -> BeanUtil.copyProperties(user, UserDTO.class))
@@ -92,3 +92,4 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
         return Result.ok(users);
     }
 }
+

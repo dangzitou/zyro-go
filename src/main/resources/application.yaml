@@ -1,27 +1,94 @@
 server:
   port: 8081
+  shutdown: graceful
+  compression:
+    enabled: true
+  tomcat:
+    threads:
+      max: 300
+      min-spare: 20
+    accept-count: 1000
+
 spring:
   application:
-    name: hmdp
+    name: hmdp-agent
   datasource:
-    driver-class-name: com.mysql.cj.jdbc.Driver  # 👈 改为新版驱动类
-    url: jdbc:mysql://127.0.0.1:3306/hmdp?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
-    username: root
-    password: 1234
-  redis:
-    host: 172.28.130.63
-    port: 6379
-    password: 123456
-    lettuce:
-      pool:
-        max-active: 10
-        max-idle: 10
-        min-idle: 1
-        time-between-eviction-runs: 10s
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: ${MYSQL_URL:jdbc:mysql://127.0.0.1:3306/hmdp?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&characterEncoding=utf8}
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD:1234}
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:123456}
+      timeout: 3s
+      lettuce:
+        pool:
+          max-active: 10
+          max-idle: 10
+          min-idle: 1
+          time-between-eviction-runs: 10s
+  ai:
+    openai:
+      base-url: ${AI_BASE_URL:https://api.openai.com}
+      api-key: ${AI_API_KEY:demo-key}
+      chat:
+        options:
+          model: ${AI_MODEL:gpt-4.1-mini}
+          temperature: ${AI_TEMPERATURE:0.2}
+      embedding:
+        options:
+          model: ${AI_EMBEDDING_MODEL:text-embedding-3-small}
   jackson:
     default-property-inclusion: non_null
+
 mybatis-plus:
   type-aliases-package: com.hmdp.entity
+
 logging:
   level:
-    com.hmdp: debug
+    com.hmdp: info
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} [traceId=%X{traceId}] - %msg%n"
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when_authorized
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+
+hmdp:
+  redisson:
+    enabled: ${REDISSON_ENABLED:true}
+  ai:
+    enabled: ${AI_ENABLED:false}
+    memory-turns: ${AI_MEMORY_TURNS:6}
+    memory-ttl-hours: ${AI_MEMORY_TTL_HOURS:12}
+    knowledge-enabled: ${AI_KNOWLEDGE_ENABLED:true}
+    knowledge-top-k: ${AI_KNOWLEDGE_TOP_K:4}
+    default-conversation-prefix: agent-session
+    rag-enabled: ${AI_RAG_ENABLED:true}
+    rag-rebuild-on-startup: ${AI_RAG_REBUILD_ON_STARTUP:false}
+    rag-store-file: ${AI_RAG_STORE_FILE:data/ai/hmdp-vector-store.json}
+    rag-similarity-threshold: ${AI_RAG_SIMILARITY_THRESHOLD:0.62}
+    planner-enabled: ${AI_PLANNER_ENABLED:true}
+    planner-validation-enabled: ${AI_PLANNER_VALIDATION_ENABLED:true}
+    recursive-tool-loop-enabled: ${AI_RECURSIVE_TOOL_LOOP_ENABLED:true}
+    rate-limit:
+      enabled: ${AI_RATE_LIMIT_ENABLED:true}
+      window-seconds: ${AI_RATE_LIMIT_WINDOW_SECONDS:60}
+      chat-max-requests: ${AI_RATE_LIMIT_CHAT_MAX_REQUESTS:30}
+      stream-max-requests: ${AI_RATE_LIMIT_STREAM_MAX_REQUESTS:10}
+    audit:
+      enabled: ${AI_AUDIT_ENABLED:true}
+      stream-key: ${AI_AUDIT_STREAM_KEY:hmdp:agent:audit}
+      max-len: ${AI_AUDIT_STREAM_MAX_LEN:5000}
+      include-answer: ${AI_AUDIT_INCLUDE_ANSWER:false}

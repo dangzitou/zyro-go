@@ -14,14 +14,12 @@ import com.hmdp.utils.RedisConstants;
 import com.hmdp.utils.RegexUtils;
 import com.hmdp.utils.SystemConstants;
 import com.hmdp.utils.UserHolder;
+import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.data.redis.connection.BitFieldSubCommands;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
-
-import javax.annotation.Resource;
-import javax.servlet.http.HttpSession;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
@@ -31,10 +29,10 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * <p>
- * 服务实现类
+ * 鏈嶅姟瀹炵幇绫?
  * </p>
  *
- * @author 虎哥
+ * @author 铏庡摜
  * @since 2021-12-22
  */
 @Service
@@ -44,64 +42,63 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
     private StringRedisTemplate stringRedisTemplate;
 
     @Override
-    public Result sendCode(String phone, HttpSession session) {
-        //1.校验手机号
+    public Result sendCode(String phone) {
+        //1.鏍￠獙鎵嬫満鍙?
         if(RegexUtils.isPhoneInvalid(phone)){
             return Result.fail("手机号格式错误");
         }
-        //2.生成验证码
+        //2.鐢熸垚楠岃瘉鐮?
         String code = RandomUtil.randomNumbers(6);
-        //3.保存验证码到redis
+        //3.淇濆瓨楠岃瘉鐮佸埌redis
         stringRedisTemplate.opsForValue().set(RedisConstants.LOGIN_CODE_KEY + phone, code, RedisConstants.LOGIN_CODE_TTL, TimeUnit.MINUTES);
-        //4.发送验证码
-        log.debug("发送短信验证码成功，验证码：{}",code);
-        //5.返回ok
+        //4.鍙戦€侀獙璇佺爜
+        log.debug("发送短信验证码成功，验证码：{}", code);
+        //5.杩斿洖ok
         return Result.ok();
     }
 
     /**
-     * 登录功能
-     * @param loginForm 登录参数，包含手机号、验证码；或者手机号、密码
-     * @param session 会话
-     * @return 结果
+     * 鐧诲綍鍔熻兘
+     * @param loginForm 鐧诲綍鍙傛暟锛屽寘鍚墜鏈哄彿銆侀獙璇佺爜锛涙垨鑰呮墜鏈哄彿銆佸瘑鐮?
+     * @return 缁撴灉
      */
     @Override
-    public Result login(LoginFormDTO loginForm, HttpSession session) {
-        //1.校验手机号
+    public Result login(LoginFormDTO loginForm) {
+        //1.鏍￠獙鎵嬫満鍙?
         String phone = loginForm.getPhone();
         if(RegexUtils.isPhoneInvalid(phone)){
             return Result.fail("手机号格式错误");
         }
-        //2.从redis中获取验证码并校验
+        //2.浠巖edis涓幏鍙栭獙璇佺爜骞舵牎楠?
         String cacheCode = stringRedisTemplate.opsForValue().get(RedisConstants.LOGIN_CODE_KEY + phone);
         String code = loginForm.getCode();
         if(code == null || !code.equals(cacheCode)){
-            //3.不一致，报错
+            //3.涓嶄竴鑷达紝鎶ラ敊
             return Result.fail("验证码错误");
         }
 
-        //4.一致，根据手机号查询用户
+        //4.涓€鑷达紝鏍规嵁鎵嬫満鍙锋煡璇㈢敤鎴?
         User user = query().eq("phone", phone).one();
-        //5.判断用户是否存在
+        //5.鍒ゆ柇鐢ㄦ埛鏄惁瀛樺湪
         if(user == null){
-            //6.不存在，创建新用户并保存
+            //6.涓嶅瓨鍦紝鍒涘缓鏂扮敤鎴峰苟淇濆瓨
             user = createUserWithPhone(phone);
         }
 
-        //7.保存用户信息到redis中
-        //7.1.随机生成token，作为登录令牌
+        //7.淇濆瓨鐢ㄦ埛淇℃伅鍒皉edis涓?
+        //7.1.闅忔満鐢熸垚token锛屼綔涓虹櫥褰曚护鐗?
         String token = UUID.randomUUID().toString(true);
-        //7.2.将User对象转为Hash存储
-        UserDTO userDTO = BeanUtil.copyProperties(user, UserDTO.class);//注意这里是BeanUtil不是BeanUtils
+        //7.2.灏哢ser瀵硅薄杞负Hash瀛樺偍
+        UserDTO userDTO = BeanUtil.copyProperties(user, UserDTO.class);//娉ㄦ剰杩欓噷鏄疊eanUtil涓嶆槸BeanUtils
         Map<String, Object> userMap = new HashMap<>();
         userMap.put("id", userDTO.getId().toString());
         userMap.put("nickName", userDTO.getNickName());
         userMap.put("icon", userDTO.getIcon());
-        //7.3.存储
+        //7.3.瀛樺偍
         stringRedisTemplate.opsForHash().putAll(RedisConstants.LOGIN_USER_KEY + token, userMap);
-        //7.4.设置token有效期
+        //7.4.璁剧疆token鏈夋晥鏈?
         stringRedisTemplate.expire(RedisConstants.LOGIN_USER_KEY + token, RedisConstants.LOGIN_USER_TTL, TimeUnit.SECONDS);
-        //8.返回token
+        //8.杩斿洖token
         return Result.ok(token);
     }
 
@@ -114,13 +111,13 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
     @Override
     public Result sign() {
         Long userId = UserHolder.getUser().getId();
-        // 获取当前日期
+        // 鑾峰彇褰撳墠鏃ユ湡
         LocalDateTime now = LocalDateTime.now();
         String keySuffix = now.format(DateTimeFormatter.ofPattern(":yyyyMM"));
         String key = RedisConstants.USER_SIGN_KEY + userId + ":" + keySuffix;
-        // 获取今天是本月的第几天
+        // 鑾峰彇浠婂ぉ鏄湰鏈堢殑绗嚑澶?
         int dayOfMonth = now.getDayOfMonth();
-        // 将今天签到状态保存到Redis中，使用bitMap数据结构
+        // 灏嗕粖澶╃鍒扮姸鎬佷繚瀛樺埌Redis涓紝浣跨敤bitMap鏁版嵁缁撴瀯
         stringRedisTemplate.opsForValue().setBit(key, dayOfMonth - 1, true);
         return Result.ok();
     }
@@ -128,24 +125,24 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
     @Override
     public Result signCount() {
         Long userId = UserHolder.getUser().getId();
-        // 获取当前日期
+        // 鑾峰彇褰撳墠鏃ユ湡
         LocalDateTime now = LocalDateTime.now();
         String keySuffix = now.format(DateTimeFormatter.ofPattern(":yyyyMM"));
         String key = RedisConstants.USER_SIGN_KEY + userId + ":" + keySuffix;
-        // 获取今天是本月的第几天
+        // 鑾峰彇浠婂ぉ鏄湰鏈堢殑绗嚑澶?
         int dayOfMonth = now.getDayOfMonth();
-        // 获取本月截止到今天为止的签到记录，返回一个十进制数字
+        // 鑾峰彇鏈湀鎴鍒颁粖澶╀负姝㈢殑绛惧埌璁板綍锛岃繑鍥炰竴涓崄杩涘埗鏁板瓧
         List<Long> signCount = stringRedisTemplate.opsForValue().bitField(key, BitFieldSubCommands.create()
                 .get(BitFieldSubCommands.BitFieldType.unsigned(dayOfMonth)).valueAt(0));
         if (signCount == null || signCount.isEmpty()) {
             return Result.ok(0);
         }
-        Long count = signCount.get(0);//这是一个十进制数字，二进制每位代表一天的签到状态，1代表签到，0代表未签到
+        Long count = signCount.get(0);//杩欐槸涓€涓崄杩涘埗鏁板瓧锛屼簩杩涘埗姣忎綅浠ｈ〃涓€澶╃殑绛惧埌鐘舵€侊紝1浠ｈ〃绛惧埌锛?浠ｈ〃鏈鍒?
         if (count == null) {
             return Result.ok(0);
         }
         int result = 0;
-        // 循环遍历这个十进制数字，统计连续签到的天数
+        // 寰幆閬嶅巻杩欎釜鍗佽繘鍒舵暟瀛楋紝缁熻杩炵画绛惧埌鐨勫ぉ鏁?
         while ((count & 1) == 1) {
             result++;
             count >>>= 1;
@@ -161,3 +158,4 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         return user;
     }
 }
+
