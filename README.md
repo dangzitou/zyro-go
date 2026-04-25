@@ -1,60 +1,62 @@
-﻿# Zyro Go
+# Zyro Go
 
 [中文](#中文) | [English](#english)
 
-Enterprise-oriented local-life agent backend built with Spring Boot, Spring AI, Redis, and MyBatis-Plus.
+> Enterprise-oriented local-life agent backend built with Spring Boot, Spring AI, Redis, and MyBatis-Plus.
 
 ## 中文
 
-### 简介
+### 项目定位
 
-`zyro-go` 是一个面向本地生活场景的 Agent 后端项目。在保留原有高并发 Redis 业务链路的基础上，引入了结构化规划、RAG、工具调用、会话记忆、流式输出、限流、审计与基础可观测能力。
+`zyro-go` 是一个面向本地生活场景的 Agent 后端项目。它保留了原有 Redis 高并发业务链路，并在此基础上补齐了规划、RAG、工具调用、会话记忆、流式输出、限流、审计和基础可观测能力。
 
-### 特性
+它不是一个“聊天接口套壳”，而是一个可回归、可部署、可继续工程化演进的 Java Agent backend。
 
-- Java 21 + Spring Boot 3.5
-- Spring AI Agent 编排
-- 结构化规划与工具调用
-- 基于 `SimpleVectorStore` 的本地向量 RAG
-- Redis 会话记忆
-- SSE 流式对话接口
-- 限流与审计留痕
-- Actuator 与 Prometheus 指标
-- 核心 Agent 链路单元测试
+### 核心能力
+
+- `Structured Planning`：先规划，再决定工具与检索策略
+- `Tool Calling`：业务事实通过受控工具返回
+- `Local RAG`：基于 `SimpleVectorStore` 的本地向量检索
+- `Redis Memory`：短期会话记忆与上下文窗口
+- `Streaming`：`SSE` 流式对话接口
+- `Governance`：限流、审计、trace、Actuator、Prometheus
 
 ### 技术栈
 
-- Java 21
-- Spring Boot 3.5.13
-- Spring AI 1.1.4
-- MyBatis-Plus 3.5.15
-- Redis / Redisson
-- MySQL 8
-- Maven
+| Layer | Stack |
+| --- | --- |
+| Runtime | Java 21, Spring Boot 3.5.13 |
+| Agent | Spring AI 1.1.4 |
+| Data | MySQL 8, Redis, Redisson |
+| ORM | MyBatis-Plus 3.5.15 |
+| Ops | Actuator, Prometheus |
+| Build | Maven |
 
-### 主要接口
+### API
 
 - `POST /ai/agent/chat`
 - `POST /ai/agent/chat/stream`
 - `DELETE /ai/agent/session`
 
-### 快速开始
+详细说明见 [docs/AGENT_API.md](docs/AGENT_API.md)。
 
-#### 环境要求
+### Quick Start
+
+#### Requirements
 
 - JDK 21
 - Maven 3.9+
 - MySQL 8.x
 - Redis 6.x+
 
-#### 配置
+#### Configuration
 
-核心配置文件：
+Core config files:
 
 - `src/main/resources/application.yaml`
 - `src/main/resources/application-prod.yaml`
 
-常用环境变量：
+Common environment variables:
 
 - `MYSQL_URL`
 - `MYSQL_USERNAME`
@@ -67,26 +69,26 @@ Enterprise-oriented local-life agent backend built with Spring Boot, Spring AI, 
 - `AI_API_KEY`
 - `AI_MODEL`
 
-#### 启动
+#### Run
 
 ```bash
 mvn spring-boot:run
 ```
 
-或：
+or
 
 ```bash
 mvn clean package -DskipTests
 java -jar target/*.jar --spring.profiles.active=prod
 ```
 
-#### 测试
+#### Test
 
 ```bash
 mvn test
 ```
 
-### 文档
+### Project Docs
 
 - [Architecture](docs/AGENT_ARCHITECTURE.md)
 - [API](docs/AGENT_API.md)
@@ -94,25 +96,43 @@ mvn test
 
 ### License
 
-本项目使用 MIT License，见 [LICENSE](LICENSE)。
+MIT License. See [LICENSE](LICENSE).
 
 ## English
 
 ### Overview
 
-`zyro-go` is an enterprise-oriented local-life agent backend that combines a Redis-based high-concurrency business core with modern agent capabilities such as planning, retrieval, tool use, chat memory, streaming, rate limiting, auditing, and observability.
+`zyro-go` is an enterprise-oriented local-life agent backend. It keeps the original Redis-based high-concurrency business core and upgrades the system with planning, retrieval, tool use, short-term memory, streaming, rate limiting, auditing, and observability.
+
+This project is designed as a practical Java agent backend rather than a thin chat wrapper.
 
 ### Highlights
 
-- Built with Java 21 and Spring Boot 3.5
-- Spring AI powered agent workflow
-- Structured planning and tool calling
+- Structured planning before execution
+- Controlled tool calling for dynamic facts
 - Local vector RAG with `SimpleVectorStore`
-- Redis-backed short-term memory
+- Redis-backed conversation memory
 - SSE streaming chat endpoint
-- Rate limiting and audit trail
-- Actuator and Prometheus integration
-- Testable core agent service layer
+- Rate limiting, audit trail, trace context, metrics
+
+### Stack
+
+| Layer | Stack |
+| --- | --- |
+| Runtime | Java 21, Spring Boot 3.5.13 |
+| Agent | Spring AI 1.1.4 |
+| Data | MySQL 8, Redis, Redisson |
+| ORM | MyBatis-Plus 3.5.15 |
+| Ops | Actuator, Prometheus |
+| Build | Maven |
+
+### Endpoints
+
+- `POST /ai/agent/chat`
+- `POST /ai/agent/chat/stream`
+- `DELETE /ai/agent/session`
+
+Detailed API reference: [docs/AGENT_API.md](docs/AGENT_API.md)
 
 ### Quick Start
 
@@ -129,7 +149,7 @@ mvn test
 mvn spring-boot:run
 ```
 
-Or package first:
+or
 
 ```bash
 mvn clean package -DskipTests
@@ -142,13 +162,7 @@ java -jar target/*.jar --spring.profiles.active=prod
 mvn test
 ```
 
-### Endpoints
-
-- `POST /ai/agent/chat`
-- `POST /ai/agent/chat/stream`
-- `DELETE /ai/agent/session`
-
-### Docs
+### Documentation
 
 - [Architecture](docs/AGENT_ARCHITECTURE.md)
 - [API](docs/AGENT_API.md)
