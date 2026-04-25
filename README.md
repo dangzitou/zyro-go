@@ -1,8 +1,31 @@
-# Zyro Go
+<h1 align="center">Zyro Go</h1>
 
-[中文](#中文) | [English](#english)
+<p align="center">
+  Enterprise-oriented local-life agent backend built with Spring Boot, Spring AI, Redis, and MyBatis-Plus.
+</p>
 
-> Enterprise-oriented local-life agent backend built with Spring Boot, Spring AI, Redis, and MyBatis-Plus.
+<p align="center">
+  <a href="#overview">Overview</a> |
+  <a href="#highlights">Highlights</a> |
+  <a href="#quick-start">Quick Start</a> |
+  <a href="#api">API</a> |
+  <a href="#documentation">Documentation</a> |
+  <a href="#license">License</a>
+</p>
+
+<p align="center">
+  <a href="#中文">中文</a> |
+  <a href="#english">English</a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/runtime-Java_21-3c873a?style=flat-square" alt="runtime Java 21" />
+  <img src="https://img.shields.io/badge/framework-Spring_Boot_3.5-6db33f?style=flat-square" alt="framework Spring Boot 3.5" />
+  <img src="https://img.shields.io/badge/agent-Spring_AI_1.1-0ea5e9?style=flat-square" alt="agent Spring AI 1.1" />
+  <img src="https://img.shields.io/badge/vector-RAG-7c3aed?style=flat-square" alt="vector RAG" />
+  <img src="https://img.shields.io/badge/cache-Redis-red?style=flat-square" alt="cache Redis" />
+  <img src="https://img.shields.io/badge/license-MIT-black?style=flat-square" alt="license MIT" />
+</p>
 
 ## 中文
 
