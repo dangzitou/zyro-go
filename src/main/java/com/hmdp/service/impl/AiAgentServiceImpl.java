@@ -2,6 +2,7 @@ package com.hmdp.service.impl;
 
 import cn.hutool.core.util.StrUtil;
 import com.hmdp.ai.AgentTraceContext;
+import com.hmdp.ai.LocalLifeAgentTools;
 import com.hmdp.ai.rag.LocalLifeRagService;
 import com.hmdp.config.AiProperties;
 import com.hmdp.config.RequestTraceFilter;
@@ -10,17 +11,20 @@ import com.hmdp.dto.AgentExecutionPlan;
 import com.hmdp.dto.AiChatRequest;
 import com.hmdp.dto.AiChatResponse;
 import com.hmdp.dto.AiRetrievalHit;
+import com.hmdp.dto.ShopRecommendationDTO;
 import com.hmdp.dto.UserDTO;
-import com.hmdp.service.IAiAgentService;
-import com.hmdp.service.IAgentPlanningService;
+import com.hmdp.entity.UserInfo;
 import com.hmdp.service.IAgentAuditService;
+import com.hmdp.service.IAgentPlanningService;
+import com.hmdp.service.IAiAgentService;
 import com.hmdp.service.IAiKnowledgeService;
+import com.hmdp.service.IUserInfoService;
 import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.advisor.ToolCallAdvisor;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
+import org.springframework.ai.chat.client.advisor.ToolCallAdvisor;
 import org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.model.tool.ToolCallingManager;
@@ -32,10 +36,13 @@ import reactor.core.Disposable;
 
 import java.io.IOException;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Slf4j
 @Service
@@ -43,15 +50,16 @@ public class AiAgentServiceImpl implements IAiAgentService {
 
     private static final String DEFAULT_CONVERSATION_ID = "default";
     private static final String SYSTEM_PROMPT = """
-            你是黑马点评 Agent，服务于本地生活场景。
-            你的目标不是凭空编造业务信息，而是优先调用工具获取事实，再基于工具结果给用户明确建议。
-            处理规则：
-            1. 涉及店铺、价格、评分、营业时间、优惠券、热门探店内容时，优先调用工具核实。
-            2. 推荐类问题优先使用 recommend_shops，不要自己在上下文里凭空排序。
-            3. 当 RAG 或知识召回片段存在时，把它当作补充背景，但动态事实仍要以工具结果为准。
-            4. 信息不足时明确说“不确定”并指出还缺什么，不要编造。
-            5. 回答使用简洁、专业、自然的中文。
+            You are Zyro's local-life agent for Chinese local services.
+            Answer with grounded business facts.
+
+            Rules:
+            1. Use tool data or prefetched business data for shops, prices, opening hours, coupons and recommendations.
+            2. Treat RAG as background only. Dynamic business facts should not be guessed.
+            3. If information is still missing, say what is missing instead of inventing.
+            4. Reply in concise, natural Chinese.
             """;
+    private static final Pattern BUDGET_PATTERN = Pattern.compile("(?:人均|预算|不超过|控制在)?\\s*(\\d{2,4})\\s*元");
 
     private final AiProperties aiProperties;
     private final ObjectProvider<ChatClient.Builder> chatClientBuilderProvider;
@@ -63,6 +71,8 @@ public class AiAgentServiceImpl implements IAiAgentService {
     private final LocalLifeRagService localLifeRagService;
     private final ObjectProvider<ToolCallingManager> toolCallingManagerProvider;
     private final AgentTraceContext traceContext;
+    private final LocalLifeAgentTools localLifeAgentTools;
+    private final IUserInfoService userInfoService;
 
     public AiAgentServiceImpl(AiProperties aiProperties,
                               ObjectProvider<ChatClient.Builder> chatClientBuilderProvider,
@@ -73,7 +83,9 @@ public class AiAgentServiceImpl implements IAiAgentService {
                               IAgentAuditService agentAuditService,
                               LocalLifeRagService localLifeRagService,
                               ObjectProvider<ToolCallingManager> toolCallingManagerProvider,
-                              AgentTraceContext traceContext) {
+                              AgentTraceContext traceContext,
+                              LocalLifeAgentTools localLifeAgentTools,
+                              IUserInfoService userInfoService) {
         this.aiProperties = aiProperties;
         this.chatClientBuilderProvider = chatClientBuilderProvider;
         this.toolCallbackProvider = toolCallbackProvider;
@@ -84,6 +96,8 @@ public class AiAgentServiceImpl implements IAiAgentService {
         this.localLifeRagService = localLifeRagService;
         this.toolCallingManagerProvider = toolCallingManagerProvider;
         this.traceContext = traceContext;
+        this.localLifeAgentTools = localLifeAgentTools;
+        this.userInfoService = userInfoService;
     }
 
     @Override
@@ -102,81 +116,72 @@ public class AiAgentServiceImpl implements IAiAgentService {
             return failResponse(clientConversationId, "当前用户未登录，无法使用 Agent 对话。");
         }
 
-        ChatClient.Builder builder = chatClientBuilderProvider.getIfAvailable();
-        if (builder == null) {
-            return failResponse(clientConversationId, "AI 模型尚未完成初始化，请检查 spring.ai.openai 配置。");
-        }
-
-        String storageConversationId = storageConversationId(currentUser.getId(), clientConversationId);
-        AgentExecutionPlan executionPlan = agentPlanningService.plan(request.getMessage());
-        if (executionPlan == null) {
-            executionPlan = new AgentExecutionPlan();
-        }
-        final AgentExecutionPlan finalExecutionPlan = executionPlan;
-        boolean useKnowledge = shouldUseKnowledge(request, finalExecutionPlan);
+        AgentExecutionPlan executionPlan = resolveExecutionPlan(request.getMessage());
+        boolean useKnowledge = shouldUseKnowledge(request, executionPlan);
         int topK = resolveTopK(request);
-        String retrievalQuery = resolveRetrievalQuery(request, finalExecutionPlan);
-        List<AiRetrievalHit> retrievalHits = useKnowledge
-                ? aiKnowledgeService.retrieve(retrievalQuery, topK)
-                : Collections.emptyList();
-        final List<AiRetrievalHit> finalRetrievalHits = retrievalHits;
+        String retrievalQuery = resolveRetrievalQuery(request, executionPlan);
+        executionPlan.setUseKnowledge(useKnowledge);
+        executionPlan.setRetrievalQuery(retrievalQuery);
+        List<AiRetrievalHit> retrievalHits = useKnowledge ? aiKnowledgeService.retrieve(retrievalQuery, topK) : Collections.emptyList();
 
         traceContext.reset();
-        traceContext.record("plan(intent=" + finalExecutionPlan.getIntent()
+        traceContext.record("plan(intent=" + executionPlan.getIntent()
                 + ", useKnowledge=" + useKnowledge
-                + ", preferredTools=" + finalExecutionPlan.getPreferredTools() + ")");
+                + ", preferredTools=" + executionPlan.getPreferredTools() + ")");
         if (useKnowledge) {
             traceContext.record("knowledge(query=" + retrievalQuery + ", hits=" + retrievalHits.size()
                     + ", vectorRagReady=" + localLifeRagService.isReady() + ")");
         }
+
         try {
-            ChatClient.Builder chatClientBuilder = builder.clone()
-                    .defaultToolCallbacks(toolCallbackProvider)
-                    .defaultSystem(buildSystemPrompt(finalExecutionPlan, finalRetrievalHits, localLifeRagService.isReady() && useKnowledge));
-
-            ToolCallingManager toolCallingManager = toolCallingManagerProvider.getIfAvailable();
-            if (toolCallingManager != null && Boolean.TRUE.equals(aiProperties.getRecursiveToolLoopEnabled())) {
-                chatClientBuilder.defaultAdvisors(
-                        ToolCallAdvisor.builder()
-                                .toolCallingManager(toolCallingManager)
-                                .advisorOrder(100)
-                                .build()
+            PrefetchedToolContext prefetched = prefetchToolContext(request.getMessage(), executionPlan, currentUser);
+            if (prefetched.hasData()) {
+                traceContext.record("fallback_prefetch(answerLines=" + prefetched.lineCount() + ")");
+                AiChatResponse response = new AiChatResponse(
+                        clientConversationId,
+                        prefetched.directAnswer(),
+                        traceContext.snapshot(),
+                        retrievalHits,
+                        executionPlan
                 );
-            }
-            ChatClient chatClient = chatClientBuilder.build();
-
-            MessageChatMemoryAdvisor memoryAdvisor = MessageChatMemoryAdvisor.builder(chatMemory)
-                    .conversationId(storageConversationId)
-                    .build();
-
-            ChatClient.ChatClientRequestSpec requestSpec = chatClient.prompt()
-                    .user(request.getMessage().trim())
-                    .advisors(memoryAdvisor);
-
-            if (useKnowledge) {
-                QuestionAnswerAdvisor questionAnswerAdvisor = localLifeRagService.buildAdvisor(retrievalQuery, topK);
-                if (questionAnswerAdvisor != null) {
-                    requestSpec = requestSpec.advisors(questionAnswerAdvisor);
-                }
+                audit(currentUser, request, response, startedAt, "SUCCESS");
+                return response;
             }
 
-            if (finalExecutionPlan.getPreferredTools() != null && !finalExecutionPlan.getPreferredTools().isEmpty()) {
-                requestSpec = requestSpec.toolNames(finalExecutionPlan.getPreferredTools().toArray(new String[0]));
+            ChatClient.Builder builder = chatClientBuilderProvider.getIfAvailable();
+            if (builder == null) {
+                return failResponse(clientConversationId, "AI 模型尚未初始化，请检查 spring.ai.openai 配置。");
             }
+
+            ChatClient.ChatClientRequestSpec requestSpec = buildRequestSpec(
+                    builder,
+                    storageConversationId(currentUser.getId(), clientConversationId),
+                    request.getMessage().trim(),
+                    executionPlan,
+                    retrievalHits,
+                    useKnowledge,
+                    retrievalQuery,
+                    topK,
+                    prefetched.promptContext()
+            );
 
             String answer = requestSpec.call().content();
-
             if (StrUtil.isBlank(answer)) {
-                answer = "我已经拿到了相关业务数据，但这次还不足以给出稳定结论。你可以换一种更具体的问法继续问我。";
+                answer = "我这次没有拿到稳定的模型回答，你可以换一种更具体的问法继续问我。";
             }
 
-            AiChatResponse response = new AiChatResponse(clientConversationId, answer, traceContext.snapshot(), finalRetrievalHits, finalExecutionPlan);
+            AiChatResponse response = new AiChatResponse(clientConversationId, answer, traceContext.snapshot(), retrievalHits, executionPlan);
             audit(currentUser, request, response, startedAt, "SUCCESS");
             return response;
         } catch (Exception e) {
-            log.error("AI agent chat failed, conversationId={}", storageConversationId, e);
-            String message = "Agent 调用失败，请检查模型网关、API Key 或稍后重试。";
-            AiChatResponse response = new AiChatResponse(clientConversationId, message, traceContext.snapshot(), finalRetrievalHits, finalExecutionPlan);
+            log.error("AI agent chat failed, conversationId={}", clientConversationId, e);
+            AiChatResponse response = new AiChatResponse(
+                    clientConversationId,
+                    "Agent 调用失败，请检查模型网关、API Key 或稍后重试。",
+                    traceContext.snapshot(),
+                    retrievalHits,
+                    executionPlan
+            );
             audit(currentUser, request, response, startedAt, "FAILED");
             return response;
         } finally {
@@ -205,30 +210,18 @@ public class AiAgentServiceImpl implements IAiAgentService {
             return emitter;
         }
 
-        ChatClient.Builder builder = chatClientBuilderProvider.getIfAvailable();
-        if (builder == null) {
-            completeWithSingleEvent(emitter, "error", Map.of("message", "AI 模型尚未完成初始化，请检查 spring.ai.openai 配置。"));
-            return emitter;
-        }
-
-        String storageConversationId = storageConversationId(currentUser.getId(), clientConversationId);
-        AgentExecutionPlan executionPlan = agentPlanningService.plan(request.getMessage());
-        if (executionPlan == null) {
-            executionPlan = new AgentExecutionPlan();
-        }
-        final AgentExecutionPlan finalExecutionPlan = executionPlan;
-        boolean useKnowledge = shouldUseKnowledge(request, finalExecutionPlan);
+        AgentExecutionPlan executionPlan = resolveExecutionPlan(request.getMessage());
+        boolean useKnowledge = shouldUseKnowledge(request, executionPlan);
         int topK = resolveTopK(request);
-        String retrievalQuery = resolveRetrievalQuery(request, finalExecutionPlan);
-        List<AiRetrievalHit> retrievalHits = useKnowledge
-                ? aiKnowledgeService.retrieve(retrievalQuery, topK)
-                : Collections.emptyList();
-        final List<AiRetrievalHit> finalRetrievalHits = retrievalHits;
+        String retrievalQuery = resolveRetrievalQuery(request, executionPlan);
+        executionPlan.setUseKnowledge(useKnowledge);
+        executionPlan.setRetrievalQuery(retrievalQuery);
+        List<AiRetrievalHit> retrievalHits = useKnowledge ? aiKnowledgeService.retrieve(retrievalQuery, topK) : Collections.emptyList();
 
         traceContext.reset();
-        traceContext.record("plan(intent=" + finalExecutionPlan.getIntent()
+        traceContext.record("plan(intent=" + executionPlan.getIntent()
                 + ", useKnowledge=" + useKnowledge
-                + ", preferredTools=" + finalExecutionPlan.getPreferredTools() + ")");
+                + ", preferredTools=" + executionPlan.getPreferredTools() + ")");
         if (useKnowledge) {
             traceContext.record("knowledge(query=" + retrievalQuery + ", hits=" + retrievalHits.size()
                     + ", vectorRagReady=" + localLifeRagService.isReady() + ")");
@@ -237,19 +230,33 @@ public class AiAgentServiceImpl implements IAiAgentService {
         try {
             sendEvent(emitter, "meta", Map.of(
                     "conversationId", clientConversationId,
-                    "plan", finalExecutionPlan,
-                    "retrievalHits", finalRetrievalHits
+                    "plan", executionPlan,
+                    "retrievalHits", retrievalHits
             ));
+
+            PrefetchedToolContext prefetched = prefetchToolContext(request.getMessage(), executionPlan, currentUser);
+            if (prefetched.hasData()) {
+                streamPlainAnswer(emitter, clientConversationId, prefetched.directAnswer(), retrievalHits, executionPlan, currentUser, request, startedAt);
+                return emitter;
+            }
+
+            ChatClient.Builder builder = chatClientBuilderProvider.getIfAvailable();
+            if (builder == null) {
+                completeWithSingleEvent(emitter, "error", Map.of("message", "AI 模型尚未初始化，请检查 spring.ai.openai 配置。"));
+                traceContext.clear();
+                return emitter;
+            }
 
             ChatClient.ChatClientRequestSpec requestSpec = buildRequestSpec(
                     builder,
-                    storageConversationId,
+                    storageConversationId(currentUser.getId(), clientConversationId),
                     request.getMessage().trim(),
-                    finalExecutionPlan,
-                    finalRetrievalHits,
+                    executionPlan,
+                    retrievalHits,
                     useKnowledge,
                     retrievalQuery,
-                    topK
+                    topK,
+                    prefetched.promptContext()
             );
 
             StringBuilder answerBuilder = new StringBuilder();
@@ -259,27 +266,15 @@ public class AiAgentServiceImpl implements IAiAgentService {
                         sendEventQuietly(emitter, "chunk", Map.of("content", chunk));
                     },
                     error -> {
-                        log.error("AI agent stream failed, conversationId={}", storageConversationId, error);
+                        log.error("AI agent stream failed, conversationId={}", clientConversationId, error);
                         sendEventQuietly(emitter, "error", Map.of("message", "流式调用失败，请稍后重试。"));
-                        AiChatResponse response = new AiChatResponse(
-                                clientConversationId,
-                                answerBuilder.toString(),
-                                traceContext.snapshot(),
-                                finalRetrievalHits,
-                                finalExecutionPlan
-                        );
+                        AiChatResponse response = new AiChatResponse(clientConversationId, answerBuilder.toString(), traceContext.snapshot(), retrievalHits, executionPlan);
                         audit(currentUser, request, response, startedAt, "FAILED");
                         traceContext.clear();
                         emitter.complete();
                     },
                     () -> {
-                        AiChatResponse response = new AiChatResponse(
-                                clientConversationId,
-                                answerBuilder.toString(),
-                                traceContext.snapshot(),
-                                finalRetrievalHits,
-                                finalExecutionPlan
-                        );
+                        AiChatResponse response = new AiChatResponse(clientConversationId, answerBuilder.toString(), traceContext.snapshot(), retrievalHits, executionPlan);
                         sendEventQuietly(emitter, "done", response);
                         audit(currentUser, request, response, startedAt, "SUCCESS");
                         traceContext.clear();
@@ -294,7 +289,7 @@ public class AiAgentServiceImpl implements IAiAgentService {
                 emitter.complete();
             });
         } catch (Exception e) {
-            log.error("AI agent stream init failed, conversationId={}", storageConversationId, e);
+            log.error("AI agent stream init failed, conversationId={}", clientConversationId, e);
             sendEventQuietly(emitter, "error", Map.of("message", "流式调用初始化失败，请检查模型配置。"));
             traceContext.clear();
             emitter.complete();
@@ -308,15 +303,19 @@ public class AiAgentServiceImpl implements IAiAgentService {
         if (currentUser == null) {
             return;
         }
-        String clientConversationId = resolveClientConversationId(conversationId);
-        chatMemory.clear(storageConversationId(currentUser.getId(), clientConversationId));
+        chatMemory.clear(storageConversationId(currentUser.getId(), resolveClientConversationId(conversationId)));
+    }
+
+    private AgentExecutionPlan resolveExecutionPlan(String message) {
+        AgentExecutionPlan plan = agentPlanningService.plan(message);
+        return plan == null ? new AgentExecutionPlan() : plan;
     }
 
     private boolean shouldUseKnowledge(AiChatRequest request, AgentExecutionPlan executionPlan) {
         if (request.getUseKnowledge() != null) {
             return request.getUseKnowledge();
         }
-        if (executionPlan != null && executionPlan.getUseKnowledge() != null) {
+        if (executionPlan.getUseKnowledge() != null) {
             return executionPlan.getUseKnowledge();
         }
         return Boolean.TRUE.equals(aiProperties.getKnowledgeEnabled());
@@ -324,75 +323,14 @@ public class AiAgentServiceImpl implements IAiAgentService {
 
     private int resolveTopK(AiChatRequest request) {
         Integer topK = request.getKnowledgeTopK() != null ? request.getKnowledgeTopK() : aiProperties.getKnowledgeTopK();
-        if (topK == null) {
-            return 4;
-        }
-        return Math.max(1, Math.min(topK, 8));
+        return topK == null ? 4 : Math.max(1, Math.min(topK, 8));
     }
 
     private String resolveRetrievalQuery(AiChatRequest request, AgentExecutionPlan executionPlan) {
-        if (executionPlan != null && StrUtil.isNotBlank(executionPlan.getRetrievalQuery())) {
+        if (StrUtil.isNotBlank(executionPlan.getRetrievalQuery())) {
             return executionPlan.getRetrievalQuery();
         }
         return request.getMessage();
-    }
-
-    private String buildSystemPrompt(AgentExecutionPlan executionPlan, List<AiRetrievalHit> retrievalHits, boolean ragAdvisorEnabled) {
-        StringBuilder builder = new StringBuilder(SYSTEM_PROMPT);
-        if (executionPlan != null) {
-            builder.append("\n本轮计划：intent=")
-                    .append(StrUtil.blankToDefault(executionPlan.getIntent(), "general"))
-                    .append("，responseStyle=")
-                    .append(StrUtil.blankToDefault(executionPlan.getResponseStyle(), "concise"))
-                    .append("，reasoningFocus=")
-                    .append(StrUtil.blankToDefault(executionPlan.getReasoningFocus(), "grounded_facts"))
-                    .append("。");
-            if (executionPlan.getPreferredTools() != null && !executionPlan.getPreferredTools().isEmpty()) {
-                builder.append(" 优先工具=").append(executionPlan.getPreferredTools()).append("。");
-            }
-        }
-        if (ragAdvisorEnabled) {
-            builder.append("\n本轮已启用向量 RAG，请优先利用检索到的上下文回答背景知识，但涉及动态事实仍要依赖工具结果。");
-            return builder.toString();
-        }
-        if (retrievalHits == null || retrievalHits.isEmpty()) {
-            return builder.toString();
-        }
-        builder.append("\n补充知识片段（仅作背景参考）:\n");
-        int index = 1;
-        for (AiRetrievalHit hit : retrievalHits) {
-            builder.append(index++)
-                    .append(". [")
-                    .append(hit.getSourceType())
-                    .append("#")
-                    .append(hit.getSourceId())
-                    .append("] ")
-                    .append(StrUtil.blankToDefault(hit.getTitle(), "未命名"))
-                    .append(" | score=")
-                    .append(hit.getScore())
-                    .append(" | ")
-                    .append(hit.getSnippet())
-                    .append("\n");
-        }
-        return builder.toString();
-    }
-
-    private AiChatResponse failResponse(String conversationId, String message) {
-        return new AiChatResponse(
-                conversationId,
-                message,
-                Collections.emptyList(),
-                Collections.emptyList(),
-                null
-        );
-    }
-
-    private String resolveClientConversationId(String conversationId) {
-        return StrUtil.blankToDefault(conversationId, DEFAULT_CONVERSATION_ID);
-    }
-
-    private String storageConversationId(Long userId, String clientConversationId) {
-        return aiProperties.getDefaultConversationPrefix() + ":" + userId + ":" + clientConversationId;
     }
 
     private ChatClient.ChatClientRequestSpec buildRequestSpec(ChatClient.Builder builder,
@@ -402,10 +340,11 @@ public class AiAgentServiceImpl implements IAiAgentService {
                                                               List<AiRetrievalHit> retrievalHits,
                                                               boolean useKnowledge,
                                                               String retrievalQuery,
-                                                              int topK) {
+                                                              int topK,
+                                                              String prefetchedContext) {
         ChatClient.Builder chatClientBuilder = builder.clone()
                 .defaultToolCallbacks(toolCallbackProvider)
-                .defaultSystem(buildSystemPrompt(executionPlan, retrievalHits, localLifeRagService.isReady() && useKnowledge));
+                .defaultSystem(buildSystemPrompt(executionPlan, retrievalHits, localLifeRagService.isReady() && useKnowledge, prefetchedContext));
 
         ToolCallingManager toolCallingManager = toolCallingManagerProvider.getIfAvailable();
         if (toolCallingManager != null && Boolean.TRUE.equals(aiProperties.getRecursiveToolLoopEnabled())) {
@@ -416,8 +355,8 @@ public class AiAgentServiceImpl implements IAiAgentService {
                             .build()
             );
         }
-        ChatClient chatClient = chatClientBuilder.build();
 
+        ChatClient chatClient = chatClientBuilder.build();
         MessageChatMemoryAdvisor memoryAdvisor = MessageChatMemoryAdvisor.builder(chatMemory)
                 .conversationId(storageConversationId)
                 .build();
@@ -433,10 +372,287 @@ public class AiAgentServiceImpl implements IAiAgentService {
             }
         }
 
-        if (executionPlan != null && executionPlan.getPreferredTools() != null && !executionPlan.getPreferredTools().isEmpty()) {
+        if (executionPlan.getPreferredTools() != null && !executionPlan.getPreferredTools().isEmpty()) {
             requestSpec = requestSpec.toolNames(executionPlan.getPreferredTools().toArray(new String[0]));
         }
         return requestSpec;
+    }
+
+    private String buildSystemPrompt(AgentExecutionPlan executionPlan,
+                                     List<AiRetrievalHit> retrievalHits,
+                                     boolean ragAdvisorEnabled,
+                                     String prefetchedContext) {
+        StringBuilder builder = new StringBuilder(SYSTEM_PROMPT);
+        if (executionPlan != null) {
+            builder.append("\nCurrent plan: intent=")
+                    .append(StrUtil.blankToDefault(executionPlan.getIntent(), "general"))
+                    .append(", responseStyle=")
+                    .append(StrUtil.blankToDefault(executionPlan.getResponseStyle(), "concise"))
+                    .append(", reasoningFocus=")
+                    .append(StrUtil.blankToDefault(executionPlan.getReasoningFocus(), "grounded_facts"));
+            if (executionPlan.getPreferredTools() != null && !executionPlan.getPreferredTools().isEmpty()) {
+                builder.append(", preferredTools=").append(executionPlan.getPreferredTools());
+            }
+            builder.append(".");
+        }
+        if (StrUtil.isNotBlank(prefetchedContext)) {
+            builder.append("\nPrefetched business facts:\n").append(prefetchedContext).append("\nUse these facts directly.");
+        }
+        if (ragAdvisorEnabled) {
+            builder.append("\nRAG is enabled for background context. Dynamic facts should still follow business data.");
+            return builder.toString();
+        }
+        if (retrievalHits == null || retrievalHits.isEmpty()) {
+            return builder.toString();
+        }
+        builder.append("\nBackground knowledge snippets:\n");
+        int index = 1;
+        for (AiRetrievalHit hit : retrievalHits) {
+            builder.append(index++)
+                    .append(". [")
+                    .append(hit.getSourceType())
+                    .append("#")
+                    .append(hit.getSourceId())
+                    .append("] ")
+                    .append(StrUtil.blankToDefault(hit.getTitle(), "Untitled"))
+                    .append(" | score=")
+                    .append(hit.getScore())
+                    .append(" | ")
+                    .append(hit.getSnippet())
+                    .append("\n");
+        }
+        return builder.toString();
+    }
+
+    private PrefetchedToolContext prefetchToolContext(String message, AgentExecutionPlan executionPlan, UserDTO currentUser) {
+        if (!Boolean.TRUE.equals(executionPlan.getUseTools())
+                || executionPlan.getPreferredTools() == null
+                || executionPlan.getPreferredTools().isEmpty()) {
+            return PrefetchedToolContext.empty();
+        }
+
+        String keyword = extractKeyword(message);
+        Integer typeId = guessTypeId(message);
+        Long budget = extractBudget(message);
+        boolean couponOnly = containsAny(message.toLowerCase(Locale.ROOT), "优惠", "券", "折扣", "coupon", "discount");
+        UserLocationContext userLocation = loadUserLocationContext(currentUser);
+
+        List<String> preferredTools = executionPlan.getPreferredTools();
+        List<String> contextLines = new ArrayList<>();
+        StringBuilder answer = new StringBuilder();
+
+        if (preferredTools.contains("recommend_shops")) {
+            List<ShopRecommendationDTO> recommendations =
+                    localLifeAgentTools.recommendShops(keyword, typeId, budget,
+                            userLocation.longitude(), userLocation.latitude(), couponOnly, 5);
+            if (!recommendations.isEmpty()) {
+                if (userLocation.available()) {
+                    answer.append("我按你当前地址附近查到了这些候选店：\n");
+                    contextLines.add("user_location: address=" + safe(userLocation.address())
+                            + ", longitude=" + safe(userLocation.longitude())
+                            + ", latitude=" + safe(userLocation.latitude()));
+                } else {
+                    answer.append("我直接从业务数据里查到了这些候选店：\n");
+                }
+                int index = 1;
+                for (ShopRecommendationDTO item : recommendations) {
+                    contextLines.add("recommendation#" + index + ": shopId=" + item.getShopId()
+                            + ", name=" + item.getName()
+                            + ", area=" + safe(item.getArea())
+                            + ", address=" + safe(item.getAddress())
+                            + ", avgPrice=" + safe(item.getAvgPrice())
+                            + ", score=" + safe(item.getScore())
+                            + ", distanceMeters=" + safe(item.getDistanceMeters())
+                            + ", couponCount=" + safe(item.getCouponCount())
+                            + ", couponSummary=" + safe(item.getCouponSummary())
+                            + ", blogSummary=" + safe(item.getBlogSummary())
+                            + ", reasonTags=" + safe(item.getReasonTags()));
+                    answer.append(index++)
+                            .append(". ")
+                            .append(item.getName())
+                            .append("，区域：").append(safe(item.getArea()))
+                            .append("，人均：").append(formatPrice(item.getAvgPrice()))
+                            .append("，评分：").append(formatScore(item.getScore()));
+                    if (item.getCouponCount() != null && item.getCouponCount() > 0) {
+                        answer.append("，优惠：").append(item.getCouponCount()).append(" 张");
+                    }
+                    if (StrUtil.isNotBlank(item.getAddress())) {
+                        answer.append("，地址：").append(item.getAddress());
+                    }
+                    answer.append("\n");
+                }
+                return new PrefetchedToolContext(String.join("\n", contextLines), answer.toString().trim(), contextLines.size());
+            }
+        }
+
+        if (preferredTools.contains("search_shops") || preferredTools.contains("get_shop_detail")) {
+            List<LocalLifeAgentTools.ShopCard> shops = localLifeAgentTools.searchShops(keyword, typeId, 1);
+            if (!shops.isEmpty()) {
+                answer.append("我直接从店铺库里查到了这些结果：\n");
+                int index = 1;
+                for (LocalLifeAgentTools.ShopCard item : shops) {
+                    contextLines.add("shop#" + index + ": shopId=" + item.shopId()
+                            + ", name=" + item.name()
+                            + ", area=" + safe(item.area())
+                            + ", address=" + safe(item.address())
+                            + ", avgPrice=" + safe(item.avgPrice())
+                            + ", score=" + safe(item.score())
+                            + ", openHours=" + safe(item.openHours()));
+                    answer.append(index++)
+                            .append(". ")
+                            .append(item.name())
+                            .append("，区域：").append(safe(item.area()))
+                            .append("，人均：").append(formatPrice(item.avgPrice()))
+                            .append("，评分：").append(formatScore(item.score()));
+                    if (StrUtil.isNotBlank(item.openHours())) {
+                        answer.append("，营业时间：").append(item.openHours());
+                    }
+                    if (StrUtil.isNotBlank(item.address())) {
+                        answer.append("，地址：").append(item.address());
+                    }
+                    answer.append("\n");
+                }
+                return new PrefetchedToolContext(String.join("\n", contextLines), answer.toString().trim(), contextLines.size());
+            }
+        }
+
+        if (preferredTools.contains("get_hot_blogs")) {
+            List<LocalLifeAgentTools.BlogCard> blogs = localLifeAgentTools.getHotBlogs(5);
+            if (!blogs.isEmpty()) {
+                answer.append("我先查到最近比较热的探店内容：\n");
+                int index = 1;
+                for (LocalLifeAgentTools.BlogCard item : blogs) {
+                    contextLines.add("blog#" + index + ": blogId=" + item.blogId()
+                            + ", title=" + safe(item.title())
+                            + ", liked=" + safe(item.liked())
+                            + ", shopId=" + safe(item.shopId())
+                            + ", snippet=" + safe(item.snippet()));
+                    answer.append(index++)
+                            .append(". ")
+                            .append(item.title())
+                            .append("，点赞：").append(safe(item.liked()))
+                            .append("，摘要：").append(safe(item.snippet()))
+                            .append("\n");
+                }
+                return new PrefetchedToolContext(String.join("\n", contextLines), answer.toString().trim(), contextLines.size());
+            }
+        }
+
+        return PrefetchedToolContext.empty();
+    }
+
+    private UserLocationContext loadUserLocationContext(UserDTO currentUser) {
+        if (currentUser == null || currentUser.getId() == null) {
+            return UserLocationContext.empty();
+        }
+        UserInfo userInfo = userInfoService.getById(currentUser.getId());
+        if (userInfo == null) {
+            return UserLocationContext.empty();
+        }
+        return new UserLocationContext(
+                userInfo.getAddress(),
+                userInfo.getLocationX(),
+                userInfo.getLocationY()
+        );
+    }
+
+    private String extractKeyword(String message) {
+        String normalized = message.replace("帮我", "")
+                .replace("请帮我", "")
+                .replace("推荐", "")
+                .replace("附近", "")
+                .replace("人均", "")
+                .replace("预算", "")
+                .replace("优惠券", "")
+                .replace("优惠", "")
+                .replace("营业时间", "")
+                .replace("价格", "");
+        if (containsAny(normalized, "烤鸭")) {
+            return "烤鸭";
+        }
+        if (containsAny(normalized, "火锅")) {
+            return "火锅";
+        }
+        if (containsAny(normalized, "咖啡")) {
+            return "咖啡";
+        }
+        if (containsAny(normalized, "烧烤")) {
+            return "烧烤";
+        }
+        if (containsAny(normalized, "酒吧")) {
+            return "酒吧";
+        }
+        return StrUtil.blankToDefault(StrUtil.subBefore(normalized.trim(), "店", false), normalized.trim());
+    }
+
+    private Integer guessTypeId(String message) {
+        String normalized = message.toLowerCase(Locale.ROOT);
+        if (containsAny(normalized, "ktv")) {
+            return 2;
+        }
+        if (containsAny(normalized, "美发", "理发")) {
+            return 3;
+        }
+        if (containsAny(normalized, "健身", "运动")) {
+            return 4;
+        }
+        if (containsAny(normalized, "按摩", "足疗")) {
+            return 5;
+        }
+        if (containsAny(normalized, "美容", "spa")) {
+            return 6;
+        }
+        if (containsAny(normalized, "亲子", "游乐")) {
+            return 7;
+        }
+        if (containsAny(normalized, "酒吧", "bar", "pub")) {
+            return 8;
+        }
+        if (containsAny(normalized, "美甲", "美睫")) {
+            return 10;
+        }
+        return 1;
+    }
+
+    private Long extractBudget(String message) {
+        Matcher matcher = BUDGET_PATTERN.matcher(message);
+        if (!matcher.find()) {
+            return null;
+        }
+        return Long.parseLong(matcher.group(1));
+    }
+
+    private boolean containsAny(String source, String... values) {
+        for (String value : values) {
+            if (source.contains(value)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void streamPlainAnswer(SseEmitter emitter,
+                                   String conversationId,
+                                   String answer,
+                                   List<AiRetrievalHit> retrievalHits,
+                                   AgentExecutionPlan executionPlan,
+                                   UserDTO currentUser,
+                                   AiChatRequest request,
+                                   long startedAt) {
+        try {
+            for (int i = 0; i < answer.length(); i += 24) {
+                String chunk = answer.substring(i, Math.min(i + 24, answer.length()));
+                sendEvent(emitter, "chunk", Map.of("content", chunk));
+            }
+            AiChatResponse response = new AiChatResponse(conversationId, answer, traceContext.snapshot(), retrievalHits, executionPlan);
+            sendEvent(emitter, "done", response);
+            audit(currentUser, request, response, startedAt, "SUCCESS");
+        } catch (IOException e) {
+            log.debug("Failed to stream prefetched answer", e);
+        } finally {
+            traceContext.clear();
+            emitter.complete();
+        }
     }
 
     private void audit(UserDTO currentUser, AiChatRequest request, AiChatResponse response, long startedAt, String status) {
@@ -448,7 +664,7 @@ public class AiAgentServiceImpl implements IAiAgentService {
                 .message(request == null ? null : request.getMessage())
                 .answer(response.getAnswer())
                 .status(status)
-                .model(System.getenv().getOrDefault("AI_MODEL", "gpt-4.1-mini"))
+                .model(System.getenv().getOrDefault("AI_MODEL", "gpt-5.4-mini"))
                 .intent(response.getPlan() == null ? null : response.getPlan().getIntent())
                 .retrievalQuery(response.getPlan() == null ? null : response.getPlan().getRetrievalQuery())
                 .retrievalCount(response.getRetrievalHits() == null ? 0 : response.getRetrievalHits().size())
@@ -456,6 +672,30 @@ public class AiAgentServiceImpl implements IAiAgentService {
                 .latencyMs(System.currentTimeMillis() - startedAt)
                 .toolTrace(response.getToolTrace())
                 .build());
+    }
+
+    private AiChatResponse failResponse(String conversationId, String message) {
+        return new AiChatResponse(conversationId, message, Collections.emptyList(), Collections.emptyList(), null);
+    }
+
+    private String resolveClientConversationId(String conversationId) {
+        return StrUtil.blankToDefault(conversationId, DEFAULT_CONVERSATION_ID);
+    }
+
+    private String storageConversationId(Long userId, String clientConversationId) {
+        return aiProperties.getDefaultConversationPrefix() + ":" + userId + ":" + clientConversationId;
+    }
+
+    private String safe(Object value) {
+        return value == null ? "-" : String.valueOf(value);
+    }
+
+    private String formatPrice(Long price) {
+        return price == null ? "未知" : price + " 元";
+    }
+
+    private String formatScore(Double score) {
+        return score == null ? "未知" : String.format(Locale.US, "%.1f", score);
     }
 
     private void completeWithSingleEvent(SseEmitter emitter, String event, Object data) {
@@ -473,5 +713,25 @@ public class AiAgentServiceImpl implements IAiAgentService {
 
     private void sendEvent(SseEmitter emitter, String event, Object data) throws IOException {
         emitter.send(SseEmitter.event().name(event).data(data));
+    }
+
+    private record PrefetchedToolContext(String promptContext, String directAnswer, int lineCount) {
+        private static PrefetchedToolContext empty() {
+            return new PrefetchedToolContext("", "", 0);
+        }
+
+        private boolean hasData() {
+            return StrUtil.isNotBlank(directAnswer);
+        }
+    }
+
+    private record UserLocationContext(String address, Double longitude, Double latitude) {
+        private static UserLocationContext empty() {
+            return new UserLocationContext("", null, null);
+        }
+
+        private boolean available() {
+            return StrUtil.isNotBlank(address) && longitude != null && latitude != null;
+        }
     }
 }

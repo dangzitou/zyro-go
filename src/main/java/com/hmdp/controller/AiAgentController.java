@@ -3,6 +3,7 @@ package com.hmdp.controller;
 import com.hmdp.dto.AiChatRequest;
 import com.hmdp.dto.AiChatResponse;
 import com.hmdp.dto.Result;
+import com.hmdp.ai.rag.LocalLifeRagService;
 import com.hmdp.service.IAiAgentService;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -22,6 +23,8 @@ public class AiAgentController {
 
     @Resource
     private IAiAgentService aiAgentService;
+    @Resource
+    private LocalLifeRagService localLifeRagService;
 
     @PostMapping("/chat")
     public Result chat(@Valid @RequestBody AiChatRequest request) {
@@ -34,6 +37,12 @@ public class AiAgentController {
     public SseEmitter chatStream(@Valid @RequestBody AiChatRequest request) {
         request.setMessage(request.getMessage().trim());
         return aiAgentService.chatStream(request);
+    }
+
+    @PostMapping("/knowledge/rebuild")
+    public Result rebuildKnowledgeIndex() {
+        localLifeRagService.rebuildIndex();
+        return Result.ok(localLifeRagService.isReady());
     }
 
     @DeleteMapping("/session")

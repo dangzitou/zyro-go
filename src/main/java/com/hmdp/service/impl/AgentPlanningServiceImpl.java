@@ -19,23 +19,36 @@ import java.util.Locale;
 public class AgentPlanningServiceImpl implements IAgentPlanningService {
 
     private static final String PLANNER_PROMPT = """
-            你是本地生活 Agent 的规划器，不直接回答用户问题，只输出执行计划。
-            你需要根据用户问题判断：
-            1. 是否需要知识补充
-            2. 是否应该允许工具调用
-            3. 当前意图属于 recommendation / factual_lookup / social_discovery / general
-            4. 最适合的 preferredTools
-            5. 更适合检索的 retrievalQuery
-            6. 这次回答更应该强调什么 reasoningFocus
+            You are the planner for Zyro's local-life agent.
+            Do not answer the user directly.
+            Only output one structured execution plan object that matches the target schema exactly.
 
-            preferredTools 只能从下面这些工具里选：
-            - search_shops
-            - get_shop_detail
-            - get_shop_coupons
-            - get_hot_blogs
-            - recommend_shops
+            The plan must contain these fields only:
+            - intent
+            - useKnowledge
+            - useTools
+            - retrievalQuery
+            - responseStyle
+            - reasoningFocus
+            - preferredTools
 
-            输出必须是结构化计划，不要输出解释文字。
+            Rules:
+            1. intent must be one of: recommendation, factual_lookup, social_discovery, general
+            2. useKnowledge decides whether background knowledge retrieval is needed
+            3. useTools decides whether business tools are needed
+            4. retrievalQuery should be a short searchable query in Chinese
+            5. responseStyle should usually be concise
+            6. reasoningFocus should describe the main reasoning objective briefly
+            7. preferredTools can only contain:
+               - search_shops
+               - get_shop_detail
+               - get_shop_coupons
+               - get_hot_blogs
+               - recommend_shops
+            8. Do not include any extra fields
+            9. Dynamic business facts such as shop details, prices, coupons, ratings and opening hours should prefer tools
+
+            Output only the structured plan object.
             """;
 
     private final AiProperties aiProperties;
@@ -89,6 +102,8 @@ public class AgentPlanningServiceImpl implements IAgentPlanningService {
         if (plan == null) {
             return fallbackPlan(message);
         }
+        AgentExecutionPlan heuristic = fallbackPlan(message);
+
         if (StrUtil.isBlank(plan.getIntent())) {
             plan.setIntent("general");
         }
@@ -99,45 +114,71 @@ public class AgentPlanningServiceImpl implements IAgentPlanningService {
             plan.setUseTools(Boolean.TRUE);
         }
         if (StrUtil.isBlank(plan.getRetrievalQuery())) {
-            plan.setRetrievalQuery(message);
+            plan.setRetrievalQuery(heuristic.getRetrievalQuery());
         }
         if (StrUtil.isBlank(plan.getResponseStyle())) {
             plan.setResponseStyle("concise");
         }
+        if (StrUtil.isBlank(plan.getReasoningFocus())) {
+            plan.setReasoningFocus(heuristic.getReasoningFocus());
+        }
         if (plan.getPreferredTools() == null) {
             plan.setPreferredTools(List.of());
+        }
+        if ((plan.getPreferredTools().isEmpty() || !Boolean.TRUE.equals(plan.getUseTools()))
+                && heuristic.getPreferredTools() != null
+                && !heuristic.getPreferredTools().isEmpty()) {
+            plan.setIntent(heuristic.getIntent());
+            plan.setUseTools(Boolean.TRUE);
+            plan.setPreferredTools(heuristic.getPreferredTools());
+            plan.setReasoningFocus(heuristic.getReasoningFocus());
         }
         return plan;
     }
 
     private AgentExecutionPlan fallbackPlan(String message) {
-        String normalized = message.toLowerCase(Locale.ROOT);
+        String normalized = StrUtil.blankToDefault(message, "").toLowerCase(Locale.ROOT);
         AgentExecutionPlan plan = new AgentExecutionPlan();
-        plan.setRetrievalQuery(message);
+        plan.setRetrievalQuery(extractRetrievalQuery(message));
         plan.setResponseStyle("concise");
         plan.setReasoningFocus("grounded_facts");
+        plan.setUseKnowledge(Boolean.TRUE);
+        plan.setUseTools(Boolean.TRUE);
 
-        if (containsAny(normalized, "推荐", "附近", "适合", "吃什么", "去哪")) {
+        if (containsAny(normalized, "推荐", "附近", "适合", "吃什么", "去哪里", "recommend", "nearby")) {
             plan.setIntent("recommendation");
             plan.setPreferredTools(List.of("recommend_shops", "get_shop_coupons", "get_shop_detail"));
             plan.setReasoningFocus("compare_candidates");
             return plan;
         }
-        if (containsAny(normalized, "优惠", "券", "折扣", "便宜")) {
+        if (containsAny(normalized, "优惠", "券", "折扣", "便宜", "discount", "coupon", "营业时间", "评分", "地址")) {
             plan.setIntent("factual_lookup");
             plan.setPreferredTools(List.of("search_shops", "get_shop_coupons", "get_shop_detail"));
-            plan.setReasoningFocus("coupon_comparison");
+            plan.setReasoningFocus("grounded_lookup");
             return plan;
         }
-        if (containsAny(normalized, "热门", "笔记", "博客", "探店")) {
+        if (containsAny(normalized, "热门", "笔记", "博客", "探店", "blog", "review")) {
             plan.setIntent("social_discovery");
-            plan.setPreferredTools(List.of("get_hot_blogs", "search_shops"));
+            plan.setPreferredTools(List.of("get_hot_blogs"));
             plan.setReasoningFocus("social_proof");
             return plan;
         }
+
         plan.setIntent("general");
         plan.setPreferredTools(List.of("search_shops", "get_shop_detail"));
+        plan.setReasoningFocus("grounded_facts");
         return plan;
+    }
+
+    private String extractRetrievalQuery(String message) {
+        if (StrUtil.isBlank(message)) {
+            return "";
+        }
+        return message.replace("请问", "")
+                .replace("帮我", "")
+                .replace("你好", "")
+                .replace("请", "")
+                .trim();
     }
 
     private boolean containsAny(String source, String... candidates) {

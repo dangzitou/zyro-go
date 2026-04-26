@@ -8,11 +8,13 @@ import com.hmdp.utils.UserHolder;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
 
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
+@Component
 public class RefreshTokenInterceptor implements HandlerInterceptor {
 
     private final StringRedisTemplate stringRedisTemplate;

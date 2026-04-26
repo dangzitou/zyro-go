@@ -39,6 +39,21 @@ public class UserInfo implements Serializable {
     private String city;
 
     /**
+     * 详细地址
+     */
+    private String address;
+
+    /**
+     * 用户经度
+     */
+    private Double locationX;
+
+    /**
+     * 用户纬度
+     */
+    private Double locationY;
+
+    /**
      * 个人介绍，不要超过128个字符
      */
     private String introduce;

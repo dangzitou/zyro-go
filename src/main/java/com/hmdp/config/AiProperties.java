@@ -23,6 +23,8 @@ public class AiProperties {
     private Boolean plannerValidationEnabled = true;
     private Boolean recursiveToolLoopEnabled = true;
     @NestedConfigurationProperty
+    private AiEmbeddingProperties embedding = new AiEmbeddingProperties();
+    @NestedConfigurationProperty
     private AiRateLimitProperties rateLimit = new AiRateLimitProperties();
     @NestedConfigurationProperty
     private AiAuditProperties audit = new AiAuditProperties();

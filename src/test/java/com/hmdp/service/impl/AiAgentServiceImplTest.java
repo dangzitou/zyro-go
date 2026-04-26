@@ -1,16 +1,18 @@
 package com.hmdp.service.impl;
 
 import com.hmdp.ai.AgentTraceContext;
+import com.hmdp.ai.LocalLifeAgentTools;
 import com.hmdp.ai.rag.LocalLifeRagService;
 import com.hmdp.config.AiProperties;
 import com.hmdp.dto.AgentExecutionPlan;
 import com.hmdp.dto.AiChatRequest;
 import com.hmdp.dto.AiChatResponse;
 import com.hmdp.dto.AiRetrievalHit;
+import com.hmdp.dto.UserDTO;
 import com.hmdp.service.IAgentAuditService;
 import com.hmdp.service.IAgentPlanningService;
-import com.hmdp.dto.UserDTO;
 import com.hmdp.service.IAiKnowledgeService;
+import com.hmdp.service.IUserInfoService;
 import com.hmdp.utils.UserHolder;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -32,6 +34,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -54,6 +57,10 @@ class AiAgentServiceImplTest {
         when(planningService.plan(anyString())).thenReturn(new AgentExecutionPlan());
         IAgentAuditService auditService = mock(IAgentAuditService.class);
         LocalLifeRagService ragService = mock(LocalLifeRagService.class);
+        LocalLifeAgentTools localLifeAgentTools = mock(LocalLifeAgentTools.class);
+        IUserInfoService userInfoService = mock(IUserInfoService.class);
+        stubEmptyTools(localLifeAgentTools);
+
         ToolCallbackProvider toolCallbackProvider = () -> new org.springframework.ai.tool.ToolCallback[0];
         ChatMemory chatMemory = MessageWindowChatMemory.builder()
                 .chatMemoryRepository(new InMemoryChatMemoryRepository())
@@ -70,11 +77,13 @@ class AiAgentServiceImplTest {
                 auditService,
                 ragService,
                 new StaticListableBeanFactory().getBeanProvider(org.springframework.ai.model.tool.ToolCallingManager.class),
-                new AgentTraceContext()
+                new AgentTraceContext(),
+                localLifeAgentTools,
+                userInfoService
         );
 
         AiChatRequest request = new AiChatRequest();
-        request.setMessage("附近有什么火锅");
+        request.setMessage("帮我推荐附近火锅");
 
         AiChatResponse response = service.chat(request);
         assertEquals("AI Agent 当前未启用，请先设置 AI_ENABLED=true。", response.getAnswer());
@@ -82,7 +91,7 @@ class AiAgentServiceImplTest {
     }
 
     @Test
-    void shouldCallSpringAiClientAndPersistConversationMemory() {
+    void shouldCallSpringAiClientAndPersistConversationMemoryWhenNoPrefetchedData() {
         AiProperties properties = new AiProperties();
         properties.setEnabled(true);
         properties.setKnowledgeEnabled(true);
@@ -95,6 +104,10 @@ class AiAgentServiceImplTest {
         IAgentPlanningService planningService = mock(IAgentPlanningService.class);
         IAgentAuditService auditService = mock(IAgentAuditService.class);
         LocalLifeRagService ragService = mock(LocalLifeRagService.class);
+        LocalLifeAgentTools localLifeAgentTools = mock(LocalLifeAgentTools.class);
+        IUserInfoService userInfoService = mock(IUserInfoService.class);
+        stubEmptyTools(localLifeAgentTools);
+
         when(knowledgeService.retrieve(anyString(), anyInt())).thenReturn(List.of(
                 new AiRetrievalHit("shop", 1L, "辣府火锅", "评分4.8，套餐力度大", 1.8D)
         ));
@@ -124,7 +137,9 @@ class AiAgentServiceImplTest {
                 auditService,
                 ragService,
                 beanFactory.getBeanProvider(org.springframework.ai.model.tool.ToolCallingManager.class),
-                new AgentTraceContext()
+                new AgentTraceContext(),
+                localLifeAgentTools,
+                userInfoService
         );
 
         UserDTO user = new UserDTO();
@@ -147,6 +162,12 @@ class AiAgentServiceImplTest {
 
         service.clearSession("default");
         assertTrue(chatMemory.get("agent-session:7:default").isEmpty());
+    }
+
+    private void stubEmptyTools(LocalLifeAgentTools localLifeAgentTools) {
+        when(localLifeAgentTools.searchShops(anyString(), any(), anyInt())).thenReturn(List.of());
+        when(localLifeAgentTools.getHotBlogs(anyInt())).thenReturn(List.of());
+        when(localLifeAgentTools.recommendShops(anyString(), any(), any(), any(), any(), any(), anyInt())).thenReturn(List.of());
     }
 
     private ObjectProvider<ChatClient.Builder> emptyProvider() {

@@ -24,5 +24,6 @@ class AgentPlanningServiceImplTest {
 
         assertEquals("recommendation", plan.getIntent());
         assertTrue(plan.getPreferredTools().contains("recommend_shops"));
+        assertEquals("compare_candidates", plan.getReasoningFocus());
     }
 }

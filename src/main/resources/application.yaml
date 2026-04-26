@@ -31,11 +31,11 @@ spring:
           time-between-eviction-runs: 10s
   ai:
     openai:
-      base-url: ${AI_BASE_URL:https://api.openai.com}
-      api-key: ${AI_API_KEY:demo-key}
+      base-url: ${AI_BASE_URL:https://api.henng.cn}
+      api-key: ${AI_API_KEY:sk-31bbb402929a905f8dbf9ae662cb731c62cc8148e516fd58ad3c8ea02c06a31e}
       chat:
         options:
-          model: ${AI_MODEL:gpt-4.1-mini}
+          model: ${AI_MODEL:gpt-5.4-mini}
           temperature: ${AI_TEMPERATURE:0.2}
       embedding:
         options:
@@ -48,7 +48,7 @@ mybatis-plus:
 
 logging:
   level:
-    com.hmdp: info
+    com.hmdp: debug
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} [traceId=%X{traceId}] - %msg%n"
 
@@ -69,7 +69,7 @@ hmdp:
   redisson:
     enabled: ${REDISSON_ENABLED:true}
   ai:
-    enabled: ${AI_ENABLED:false}
+    enabled: ${AI_ENABLED:true}
     memory-turns: ${AI_MEMORY_TURNS:6}
     memory-ttl-hours: ${AI_MEMORY_TTL_HOURS:12}
     knowledge-enabled: ${AI_KNOWLEDGE_ENABLED:true}
@@ -79,6 +79,12 @@ hmdp:
     rag-rebuild-on-startup: ${AI_RAG_REBUILD_ON_STARTUP:false}
     rag-store-file: ${AI_RAG_STORE_FILE:data/ai/hmdp-vector-store.json}
     rag-similarity-threshold: ${AI_RAG_SIMILARITY_THRESHOLD:0.62}
+    embedding:
+      provider: ${AI_EMBEDDING_PROVIDER:auto}
+      base-url: ${AI_EMBEDDING_BASE_URL:${AI_BASE_URL:https://api.henng.cn}}
+      api-key: ${AI_EMBEDDING_API_KEY:${AI_API_KEY:}}
+      model: ${AI_EMBEDDING_MODEL:text-embedding-3-small}
+      local-dimensions: ${AI_LOCAL_EMBEDDING_DIMENSIONS:256}
     planner-enabled: ${AI_PLANNER_ENABLED:true}
     planner-validation-enabled: ${AI_PLANNER_VALIDATION_ENABLED:true}
     recursive-tool-loop-enabled: ${AI_RECURSIVE_TOOL_LOOP_ENABLED:true}

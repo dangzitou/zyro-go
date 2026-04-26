@@ -21,15 +21,16 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import jakarta.annotation.Resource;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 /**
  * <p>
@@ -63,16 +64,34 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
 
     private static final ExecutorService SECKILL_ORDER_EXECUTOR = Executors.newSingleThreadExecutor();
+    private volatile boolean running = true;
+    private Future<?> orderHandlerFuture;
 
     @PostConstruct
     private void init(){
-        SECKILL_ORDER_EXECUTOR.submit(new VoucherOrderHandler());
+        orderHandlerFuture = SECKILL_ORDER_EXECUTOR.submit(new VoucherOrderHandler());
+    }
+
+    @PreDestroy
+    private void destroy() {
+        running = false;
+        if (orderHandlerFuture != null) {
+            orderHandlerFuture.cancel(true);
+        }
+        SECKILL_ORDER_EXECUTOR.shutdownNow();
+        try {
+            if (!SECKILL_ORDER_EXECUTOR.awaitTermination(3, TimeUnit.SECONDS)) {
+                log.warn("秒杀订单处理线程未能在关闭阶段及时退出");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private class VoucherOrderHandler implements Runnable{
         @Override
         public void run() {
-            while(true){
+            while(running && !Thread.currentThread().isInterrupted()){
                 try {
                     //鑾峰彇闃熷垪涓殑璁㈠崟淇℃伅
                     List<MapRecord<String, Object, Object>> list = stringRedisTemplate.opsForStream().read(
@@ -94,14 +113,17 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                     //纭娑堟伅宸叉秷璐?
                     stringRedisTemplate.opsForStream().acknowledge("stream.orders","g1",record.getId());
                 } catch (Exception e) {
-                    log.error(e.getMessage());
+                    if (!running || Thread.currentThread().isInterrupted()) {
+                        break;
+                    }
+                    log.error("处理秒杀订单消息异常", e);
                     handlePendingList();
                 }
             }
         }
 
         private void handlePendingList() {
-            while(true){
+            while(running && !Thread.currentThread().isInterrupted()){
                 try {
                     //鑾峰彇pending-list涓殑璁㈠崟淇℃伅
                     List<MapRecord<String, Object, Object>> list = stringRedisTemplate.opsForStream().read(
@@ -123,11 +145,15 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                     //纭娑堟伅宸叉秷璐?
                     stringRedisTemplate.opsForStream().acknowledge("stream.orders","g1",record.getId());
                 } catch (Exception e) {
-                    log.error(e.getMessage());
+                    if (!running || Thread.currentThread().isInterrupted()) {
+                        break;
+                    }
+                    log.error("处理 pending-list 订单异常", e);
                     try {
                         Thread.sleep(20);
                     } catch (InterruptedException ex) {
-                        throw new RuntimeException(ex);
+                        Thread.currentThread().interrupt();
+                        break;
                     }
                 }
             }

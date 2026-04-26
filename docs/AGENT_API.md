@@ -2,7 +2,7 @@
 
 ## 1. 鉴权说明
 
-Agent 接口不在匿名白名单中，默认需要登录。
+Agent 接口默认需要登录，不在匿名白名单中。
 
 请求头：
 
@@ -10,9 +10,9 @@ Agent 接口不在匿名白名单中，默认需要登录。
 Authorization: <token>
 ```
 
-`token` 由原有登录接口 `/user/login` 返回。
+`token` 由现有登录接口 `/user/login` 返回。
 
-## 2. 对话接口
+## 2. 会话对话接口
 
 ### 2.1 URL
 
@@ -31,35 +31,35 @@ POST /ai/agent/chat
 }
 ```
 
-字段说明：
+### 2.3 字段说明
 
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
 | `message` | 是 | 用户输入 |
 | `conversationId` | 否 | 会话 ID；为空时默认使用 `default` |
-| `useKnowledge` | 否 | 是否启用知识补充；为空时走配置默认值 |
-| `knowledgeTopK` | 否 | 知识召回条数；为空时走配置默认值 |
+| `useKnowledge` | 否 | 是否启用知识检索；为空时走系统配置 |
+| `knowledgeTopK` | 否 | 检索命中条数；范围 `1-8` |
 
-### 2.3 响应体
+### 2.4 响应体
 
 ```json
 {
   "success": true,
   "data": {
     "conversationId": "dinner-plan",
-    "answer": "如果你想控制预算，优先看辣府火锅，它评分高、距离近，而且当前有券。",
+    "answer": "如果你想控制预算，我建议先看附近有券的火锅店，我已经基于实时店铺和优惠数据筛出几家候选。",
     "toolTrace": [
       "plan(intent=recommendation, useKnowledge=true, preferredTools=[recommend_shops, get_shop_coupons])",
-      "knowledge(query=火锅, hits=4, vectorRagReady=true)",
+      "knowledge(query=火锅, hits=1, vectorRagReady=true)",
       "recommend_shops(keyword=火锅, typeId=-, budget=100, couponOnly=true, limit=-) -> 3 recommendation(s)",
       "get_shop_coupons(shopId=1) -> 2 coupon(s)"
     ],
     "retrievalHits": [
       {
-        "sourceType": "shop",
-        "sourceId": 1,
-        "title": "辣府火锅",
-        "snippet": "评分4.9，套餐力度大",
+        "sourceType": "guide",
+        "sourceId": 2,
+        "title": "动态事实约束",
+        "snippet": "价格、评分、营业时间、优惠券、店铺详情等动态事实必须来自工具或数据库。",
         "score": 1.8
       }
     ],
@@ -76,108 +76,52 @@ POST /ai/agent/chat
 }
 ```
 
-字段说明：
+### 2.5 响应字段说明
 
 | 字段 | 说明 |
 | --- | --- |
-| `conversationId` | 当前对话所属会话 |
-| `answer` | 模型最终回答 |
-| `toolTrace` | 本轮规划、检索、工具调用轨迹 |
-| `retrievalHits` | 混合检索命中的背景片段 |
+| `conversationId` | 当前会话 ID |
+| `answer` | Agent 最终回复 |
+| `toolTrace` | 规划、检索、工具调用轨迹 |
+| `retrievalHits` | 背景知识命中片段，仅用于补充上下文 |
 | `plan` | 本轮结构化执行计划 |
 
-## 3. 清理会话接口
+## 3. RAG 与动态数据边界
 
-### 3.1 URL
+这是当前项目里最重要的约束之一：
 
-```http
-DELETE /ai/agent/session?conversationId=dinner-plan
-```
+- `retrievalHits` 只承载静态背景知识，不承载动态业务真相。
+- 向量索引当前只收录一类内容：
+  - 静态规则/说明文档 `guide`
+- 店铺详情、价格、优惠券、评分、营业时间、库存等动态事实：
+  - 不进入向量索引
+  - 不应作为 `retrievalHits` 的事实依据
+  - 必须通过工具调用或数据库查询获取
+- 探店博客也不再进入 RAG：
+  - 博客属于半动态内容
+  - 更适合走工具查询或内容接口
+  - 不再出现在 `retrievalHits`
 
-说明：
+换句话说，`RAG` 负责“补规则背景”，`Tools/DB` 负责“给业务真相”。
 
-- `conversationId` 为空时，默认清理 `default`
-- 清理的是当前登录用户对应会话，不会影响其他用户
+## 4. 流式对话接口
 
-### 3.2 成功响应
-
-```json
-{
-  "success": true,
-  "data": null
-}
-```
-
-## 4. 错误场景
-
-典型返回：
-
-### 4.1 Agent 未启用
-
-```json
-{
-  "success": true,
-  "data": {
-    "conversationId": "default",
-    "answer": "AI Agent 当前未启用，请先设置 AI_ENABLED=true。",
-    "toolTrace": [],
-    "retrievalHits": []
-  }
-}
-```
-
-### 4.2 未登录
-
-由于接口受登录拦截器保护，通常会先返回 HTTP 401。
-
-### 4.3 模型网关异常
-
-返回说明性文本：
-
-```json
-{
-  "success": true,
-  "data": {
-    "conversationId": "default",
-    "answer": "Agent 调用失败，请检查模型网关、API Key 或稍后重试。",
-    "toolTrace": [],
-    "retrievalHits": []
-  }
-}
-```
-
-## 5. 推荐调试方法
-
-联调时建议看三件事：
-
-1. `plan` 是否和用户意图匹配
-2. `toolTrace` 是否符合预期
-3. `retrievalHits` 是否说明 RAG 拿到了正确背景
-
-如果 `answer` 很空泛，通常先看：
-
-- 是否真的触发了 `recommend_shops`
-- 是否有命中知识补充
-- 模型配置是否可用
-
-## 6. 流式对话接口
-
-### 6.1 URL
+### 4.1 URL
 
 ```http
 POST /ai/agent/chat/stream
 ```
 
-### 6.2 说明
+### 4.2 说明
 
-- 使用 `SSE` 返回增量内容。
-- 鉴权方式和普通对话接口一致，仍然需要 `Authorization` 头。
-- 首个事件会返回 `meta`，其中包含 `conversationId`、`plan`、`retrievalHits`。
-- 中间事件会持续返回 `chunk`。
-- 结束时返回 `done`，结构与普通 `chat` 接口中的 `data` 基本一致。
-- 如果中途失败，会返回 `error` 事件。
+- 使用 `SSE` 返回增量内容
+- 鉴权方式与普通对话接口一致，仍然需要 `Authorization`
+- 首个事件返回 `meta`，包含 `conversationId`、`plan`、`retrievalHits`
+- 中间持续返回 `chunk`
+- 完成时返回 `done`
+- 异常时返回 `error`
 
-### 6.3 事件示例
+### 4.3 事件示例
 
 ```text
 event: meta
@@ -187,30 +131,48 @@ event: chunk
 data: {"content":"如果你想控制预算，"}
 
 event: chunk
-data: {"content":"我更建议先看附近有券的火锅店。"}
+data: {"content":"我建议先看附近有券的火锅店。"}
 
 event: done
-data: {"conversationId":"dinner-plan","answer":"如果你想控制预算，我更建议先看附近有券的火锅店。"}
+data: {"conversationId":"dinner-plan","answer":"如果你想控制预算，我建议先看附近有券的火锅店。"}
 ```
 
-## 7. 限流与错误码
+## 5. 清理会话接口
 
-- `/ai/agent/chat` 和 `/ai/agent/chat/stream` 都会经过 `AgentRateLimitInterceptor`。
-- 默认优先按登录用户限流；拿不到用户时回退到 IP。
-- 当请求过于频繁时返回 HTTP `429`。
+### 5.1 URL
 
-示例：
-
-```json
-{
-  "success": false,
-  "errorMsg": "请求过于频繁，请稍后再试"
-}
+```http
+DELETE /ai/agent/session?conversationId=dinner-plan
 ```
 
-## 8. 审计与追踪
+### 5.2 说明
 
-- 每次 Agent 对话都会生成 `traceId` 并进入日志上下文。
-- 审计记录会写入 Redis Stream，默认 key 为 `hmdp:agent:audit`。
-- 审计内容包含用户、会话、请求、计划、trace、耗时、状态等字段。
-- 默认不把完整回答正文写进审计流，避免审计数据量和隐私风险过高；如有需要可通过配置开启。
+- `conversationId` 为空时默认清理 `default`
+- 只清理当前登录用户自己的会话记忆
+
+## 6. 手动重建知识索引
+
+### 6.1 URL
+
+```http
+POST /ai/agent/knowledge/rebuild
+```
+
+### 6.2 说明
+
+- 需要登录
+- 会触发 `LocalLifeRagService.rebuildIndex()`
+- 成功时返回当前索引是否可用
+- 当远程 embedding 网关不可用时，系统会按配置自动回退到本地 embedding
+- 适合以下场景：
+  - 调整了静态规则文档
+  - 首次部署后需要初始化向量索引
+
+## 7. 联调建议
+
+联调时优先看这 4 件事：
+
+1. `plan` 是否识别对了用户意图
+2. `toolTrace` 是否真的调用了应调用的工具
+3. `retrievalHits` 是否只出现 `guide`
+4. 最终 `answer` 是否引用了工具返回的动态事实

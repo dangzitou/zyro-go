@@ -1,14 +1,7 @@
 package com.hmdp.ai.rag;
 
-import cn.hutool.core.io.FileUtil;
 import cn.hutool.core.util.StrUtil;
 import com.hmdp.config.AiProperties;
-import com.hmdp.entity.Blog;
-import com.hmdp.entity.Shop;
-import com.hmdp.entity.Voucher;
-import com.hmdp.service.IBlogService;
-import com.hmdp.service.IShopService;
-import com.hmdp.service.IVoucherService;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor;
@@ -21,7 +14,9 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 
 import java.io.File;
-import java.util.ArrayList;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -30,27 +25,16 @@ import java.util.Map;
 @Service
 public class LocalLifeRagService {
 
-    private static final int MAX_DOCS_PER_DOMAIN = 200;
-
     private final AiProperties aiProperties;
     private final ObjectProvider<EmbeddingModel> embeddingModelProvider;
-    private final IShopService shopService;
-    private final IVoucherService voucherService;
-    private final IBlogService blogService;
 
     private volatile SimpleVectorStore vectorStore;
     private volatile boolean ready;
 
     public LocalLifeRagService(AiProperties aiProperties,
-                               ObjectProvider<EmbeddingModel> embeddingModelProvider,
-                               IShopService shopService,
-                               IVoucherService voucherService,
-                               IBlogService blogService) {
+                               ObjectProvider<EmbeddingModel> embeddingModelProvider) {
         this.aiProperties = aiProperties;
         this.embeddingModelProvider = embeddingModelProvider;
-        this.shopService = shopService;
-        this.voucherService = voucherService;
-        this.blogService = blogService;
     }
 
     @PostConstruct
@@ -65,7 +49,7 @@ public class LocalLifeRagService {
         }
 
         SimpleVectorStore store = SimpleVectorStore.builder(embeddingModel).build();
-        File storeFile = FileUtil.file(aiProperties.getRagStoreFile());
+        File storeFile = resolveStoreFile();
         try {
             if (storeFile.exists() && !Boolean.TRUE.equals(aiProperties.getRagRebuildOnStartup())) {
                 store.load(storeFile);
@@ -123,138 +107,56 @@ public class LocalLifeRagService {
             log.warn("EmbeddingModel bean not found, skip rebuilding vector index.");
             return;
         }
-        rebuildIndex(SimpleVectorStore.builder(embeddingModel).build(), FileUtil.file(aiProperties.getRagStoreFile()));
+        rebuildIndex(SimpleVectorStore.builder(embeddingModel).build(), resolveStoreFile());
     }
 
     private void rebuildIndex(SimpleVectorStore store, File storeFile) {
-        List<Document> documents = buildDocuments();
+        List<Document> documents = buildStaticKnowledgeDocuments();
         if (documents.isEmpty()) {
-            log.warn("No business documents found, vector RAG remains disabled.");
+            log.warn("No knowledge documents found, vector RAG remains disabled.");
             return;
         }
         store.add(documents);
-        FileUtil.mkParentDirs(storeFile);
+        ensureParentDirectory(storeFile.toPath());
         store.save(storeFile);
         this.vectorStore = store;
         this.ready = true;
-        log.info("Rebuilt vector store with {} documents at {}", documents.size(), storeFile.getAbsolutePath());
+        log.info("Rebuilt vector store with {} guide documents at {}", documents.size(), storeFile.getAbsolutePath());
     }
 
-    private List<Document> buildDocuments() {
-        List<Document> documents = new ArrayList<>();
-        documents.addAll(buildShopDocuments());
-        documents.addAll(buildVoucherDocuments());
-        documents.addAll(buildBlogDocuments());
-        documents.addAll(buildStaticKnowledgeDocuments());
-        return documents;
+    private File resolveStoreFile() {
+        Path path = Paths.get(aiProperties.getRagStoreFile()).toAbsolutePath().normalize();
+        return path.toFile();
     }
 
-    private List<Document> buildShopDocuments() {
-        List<Shop> shops = shopService.query().last("LIMIT " + MAX_DOCS_PER_DOMAIN).list();
-        if (shops == null || shops.isEmpty()) {
-            return Collections.emptyList();
+    private void ensureParentDirectory(Path filePath) {
+        try {
+            Path parent = filePath.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to create vector store directory for " + filePath, e);
         }
-        List<Document> documents = new ArrayList<>(shops.size());
-        for (Shop shop : shops) {
-            String text = "店铺：" + safe(shop.getName())
-                    + "；商圈：" + safe(shop.getArea())
-                    + "；地址：" + safe(shop.getAddress())
-                    + "；均价：" + safe(shop.getAvgPrice())
-                    + "；评分：" + normalizeScore(shop.getScore())
-                    + "；评价数：" + safe(shop.getComments())
-                    + "；营业时间：" + safe(shop.getOpenHours());
-            documents.add(Document.builder()
-                    .id("shop:" + shop.getId())
-                    .text(text)
-                    .metadata(Map.of(
-                            "sourceType", "shop",
-                            "sourceId", shop.getId(),
-                            "title", safe(shop.getName())
-                    ))
-                    .build());
-        }
-        return documents;
-    }
-
-    private List<Document> buildVoucherDocuments() {
-        List<Voucher> vouchers = voucherService.query().last("LIMIT " + MAX_DOCS_PER_DOMAIN).list();
-        if (vouchers == null || vouchers.isEmpty()) {
-            return Collections.emptyList();
-        }
-        List<Document> documents = new ArrayList<>(vouchers.size());
-        for (Voucher voucher : vouchers) {
-            String text = "优惠券：" + safe(voucher.getTitle())
-                    + "；副标题：" + safe(voucher.getSubTitle())
-                    + "；支付金额：" + safe(voucher.getPayValue())
-                    + "；抵扣金额：" + safe(voucher.getActualValue())
-                    + "；规则：" + safe(voucher.getRules());
-            documents.add(Document.builder()
-                    .id("voucher:" + voucher.getId())
-                    .text(text)
-                    .metadata(Map.of(
-                            "sourceType", "voucher",
-                            "sourceId", voucher.getId(),
-                            "title", safe(voucher.getTitle())
-                    ))
-                    .build());
-        }
-        return documents;
-    }
-
-    private List<Document> buildBlogDocuments() {
-        List<Blog> blogs = blogService.query()
-                .orderByDesc("liked")
-                .last("LIMIT " + MAX_DOCS_PER_DOMAIN)
-                .list();
-        if (blogs == null || blogs.isEmpty()) {
-            return Collections.emptyList();
-        }
-        List<Document> documents = new ArrayList<>(blogs.size());
-        for (Blog blog : blogs) {
-            String text = "探店笔记标题：" + safe(blog.getTitle())
-                    + "；内容：" + abbreviate(safe(blog.getContent()), 180)
-                    + "；点赞数：" + safe(blog.getLiked())
-                    + "；关联店铺ID：" + safe(blog.getShopId());
-            documents.add(Document.builder()
-                    .id("blog:" + blog.getId())
-                    .text(text)
-                    .metadata(Map.of(
-                            "sourceType", "blog",
-                            "sourceId", blog.getId(),
-                            "title", StrUtil.blankToDefault(blog.getTitle(), "探店笔记")
-                    ))
-                    .build());
-        }
-        return documents;
     }
 
     private List<Document> buildStaticKnowledgeDocuments() {
         return List.of(
                 Document.builder()
                         .id("guide:agent")
-                        .text("本系统是本地生活 Agent，推荐类问题应优先结合推荐工具和优惠券工具，不要只根据语言模型记忆回答。")
+                        .text("本系统是本地生活 Agent。遇到推荐类问题时，应优先结合推荐工具、店铺工具和优惠券工具获取事实依据，而不是只依赖语言模型记忆直接回答。")
                         .metadata(Map.of("sourceType", "guide", "sourceId", 1L, "title", "Agent 使用约束"))
                         .build(),
                 Document.builder()
-                        .id("guide:coupon")
-                        .text("涉及价格、优惠券、评分、营业时间等动态业务事实时，应优先依赖工具和召回结果，不可直接编造。")
+                        .id("guide:dynamic-facts")
+                        .text("涉及价格、优惠券、评分、营业时间、店铺详情等动态业务事实时，必须优先依赖工具调用和数据库查询结果，不能直接编造，也不能把旧向量片段当成当前真实数据。")
                         .metadata(Map.of("sourceType", "guide", "sourceId", 2L, "title", "动态事实约束"))
+                        .build(),
+                Document.builder()
+                        .id("guide:retrieval-scope")
+                        .text("RAG 只负责静态规则、解释性知识和系统约束增强，不再承载探店博客、店铺内容或任何动态业务信息。")
+                        .metadata(Map.of("sourceType", "guide", "sourceId", 3L, "title", "RAG 范围约束"))
                         .build()
         );
-    }
-
-    private String safe(Object value) {
-        return value == null ? "未知" : String.valueOf(value);
-    }
-
-    private String normalizeScore(Integer score) {
-        return score == null ? "未知" : String.valueOf(score / 10.0D);
-    }
-
-    private String abbreviate(String text, int maxLength) {
-        if (text == null || text.length() <= maxLength) {
-            return text;
-        }
-        return text.substring(0, maxLength) + "...";
     }
 }

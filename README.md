@@ -39,7 +39,7 @@
 
 - `Structured Planning`：先规划，再决定工具与检索策略
 - `Tool Calling`：业务事实通过受控工具返回
-- `Local RAG`：基于 `SimpleVectorStore` 的本地向量检索
+- `Local RAG`：基于 `SimpleVectorStore` 的本地静态规则检索
 - `Redis Memory`：短期会话记忆与上下文窗口
 - `Streaming`：`SSE` 流式对话接口
 - `Governance`：限流、审计、trace、Actuator、Prometheus

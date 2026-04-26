@@ -25,6 +25,8 @@ import java.util.List;
 public class ShopRecommendationServiceImpl implements IShopRecommendationService {
 
     private static final int MAX_CANDIDATES = 30;
+    private static final int MAX_CANDIDATES_WITH_LOCATION = 200;
+    private static final double NEARBY_DISTANCE_LIMIT_METERS = 50000D;
 
     @Resource
     private IShopService shopService;
@@ -39,11 +41,12 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
     public List<ShopRecommendationDTO> recommendShops(String keyword, Integer typeId, Long maxBudget,
                                                       Double x, Double y, Boolean couponOnly, Integer limit) {
         int resultLimit = limit == null ? 5 : Math.max(1, Math.min(limit, 10));
+        boolean useLocation = x != null && y != null;
         List<Shop> candidates = shopService.query()
                 .like(StrUtil.isNotBlank(keyword), "name", keyword)
                 .eq(typeId != null, "type_id", typeId)
                 .le(maxBudget != null, "avg_price", maxBudget)
-                .last("LIMIT " + MAX_CANDIDATES)
+                .last("LIMIT " + (useLocation ? MAX_CANDIDATES_WITH_LOCATION : MAX_CANDIDATES))
                 .list();
         if (candidates == null || candidates.isEmpty()) {
             return Collections.emptyList();
@@ -57,6 +60,9 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
             }
             List<Blog> blogs = loadShopBlogs(shop.getId());
             ShopRecommendationDTO dto = buildRecommendation(shop, vouchers, blogs, x, y);
+            if (useLocation && dto.getDistanceMeters() != null && dto.getDistanceMeters() > NEARBY_DISTANCE_LIMIT_METERS) {
+                continue;
+            }
             recommendations.add(dto);
         }
 
