@@ -59,7 +59,7 @@ public class AiAgentServiceImpl implements IAiAgentService {
             3. If information is still missing, say what is missing instead of inventing.
             4. Reply in concise, natural Chinese.
             """;
-    private static final Pattern BUDGET_PATTERN = Pattern.compile("(?:人均|预算|不超过|控制在)?\\s*(\\d{2,4})\\s*元");
+    private static final Pattern BUDGET_PATTERN = Pattern.compile("(?:人均|预算|不超过|控制在|价格)?\\s*(\\d{2,4})\\s*(?:元|块)?\\s*(?:以内|以下|之内)?");
 
     private final AiProperties aiProperties;
     private final ObjectProvider<ChatClient.Builder> chatClientBuilderProvider;
@@ -435,6 +435,7 @@ public class AiAgentServiceImpl implements IAiAgentService {
         Integer typeId = guessTypeId(message);
         Long budget = extractBudget(message);
         boolean couponOnly = containsAny(message.toLowerCase(Locale.ROOT), "优惠", "券", "折扣", "coupon", "discount");
+        boolean nearbyRequested = containsAny(message.toLowerCase(Locale.ROOT), "附近", "周边", "nearby");
         UserLocationContext userLocation = loadUserLocationContext(currentUser);
 
         List<String> preferredTools = executionPlan.getPreferredTools();
@@ -473,6 +474,9 @@ public class AiAgentServiceImpl implements IAiAgentService {
                             .append("，区域：").append(safe(item.getArea()))
                             .append("，人均：").append(formatPrice(item.getAvgPrice()))
                             .append("，评分：").append(formatScore(item.getScore()));
+                    if (item.getDistanceMeters() != null) {
+                        answer.append("，距离：").append(formatDistance(item.getDistanceMeters()));
+                    }
                     if (item.getCouponCount() != null && item.getCouponCount() > 0) {
                         answer.append("，优惠：").append(item.getCouponCount()).append(" 张");
                     }
@@ -483,9 +487,20 @@ public class AiAgentServiceImpl implements IAiAgentService {
                 }
                 return new PrefetchedToolContext(String.join("\n", contextLines), answer.toString().trim(), contextLines.size());
             }
+            if (nearbyRequested && userLocation.available()) {
+                String noNearbyResult = "我按你当前地址附近查了一遍，但暂时没有找到满足条件的候选店。你可以放宽预算、换一个品类，或者去掉优惠限制再试一次。";
+                contextLines.add("user_location: address=" + safe(userLocation.address())
+                        + ", longitude=" + safe(userLocation.longitude())
+                        + ", latitude=" + safe(userLocation.latitude())
+                        + ", nearbyResult=empty");
+                return new PrefetchedToolContext(String.join("\n", contextLines), noNearbyResult, contextLines.size());
+            }
         }
 
         if (preferredTools.contains("search_shops") || preferredTools.contains("get_shop_detail")) {
+            if (nearbyRequested && userLocation.available()) {
+                return PrefetchedToolContext.empty();
+            }
             List<LocalLifeAgentTools.ShopCard> shops = localLifeAgentTools.searchShops(keyword, typeId, 1);
             if (!shops.isEmpty()) {
                 answer.append("我直接从店铺库里查到了这些结果：\n");
@@ -696,6 +711,16 @@ public class AiAgentServiceImpl implements IAiAgentService {
 
     private String formatScore(Double score) {
         return score == null ? "未知" : String.format(Locale.US, "%.1f", score);
+    }
+
+    private String formatDistance(Double distanceMeters) {
+        if (distanceMeters == null) {
+            return "未知";
+        }
+        if (distanceMeters < 1000D) {
+            return Math.round(distanceMeters) + " 米";
+        }
+        return String.format(Locale.US, "%.1f 公里", distanceMeters / 1000D);
     }
 
     private void completeWithSingleEvent(SseEmitter emitter, String event, Object data) {

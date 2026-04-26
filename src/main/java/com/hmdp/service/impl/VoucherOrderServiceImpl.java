@@ -43,6 +43,10 @@ import java.util.concurrent.TimeUnit;
 @Slf4j
 @Service
 public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, VoucherOrder> implements IVoucherOrderService {
+    private static final String ORDER_STREAM_KEY = "stream.orders";
+    private static final String ORDER_CONSUMER_GROUP = "g1";
+    private static final String ORDER_CONSUMER = "c1";
+
     @Resource
     private ISeckillVoucherService seckillVoucherService;
 
@@ -69,6 +73,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
     @PostConstruct
     private void init(){
+        ensureOrderConsumerGroup();
         orderHandlerFuture = SECKILL_ORDER_EXECUTOR.submit(new VoucherOrderHandler());
     }
 
@@ -95,9 +100,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                 try {
                     //鑾峰彇闃熷垪涓殑璁㈠崟淇℃伅
                     List<MapRecord<String, Object, Object>> list = stringRedisTemplate.opsForStream().read(
-                            Consumer.from("g1", "c1"),
+                            Consumer.from(ORDER_CONSUMER_GROUP, ORDER_CONSUMER),
                             StreamReadOptions.empty().count(1).block(Duration.ofSeconds(2)),
-                            StreamOffset.create("stream.orders", ReadOffset.lastConsumed())
+                            StreamOffset.create(ORDER_STREAM_KEY, ReadOffset.lastConsumed())
                     );
                     //鍒ゆ柇鏄惁鑾峰彇鎴愬姛
                     if(list == null || list.isEmpty()){
@@ -111,10 +116,14 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                     //鍒涘缓璁㈠崟
                     handleVoucherOrder(voucherOrder);
                     //纭娑堟伅宸叉秷璐?
-                    stringRedisTemplate.opsForStream().acknowledge("stream.orders","g1",record.getId());
+                    stringRedisTemplate.opsForStream().acknowledge(ORDER_STREAM_KEY, ORDER_CONSUMER_GROUP, record.getId());
                 } catch (Exception e) {
                     if (!running || Thread.currentThread().isInterrupted()) {
                         break;
+                    }
+                    if (isNoGroupError(e)) {
+                        ensureOrderConsumerGroup();
+                        continue;
                     }
                     log.error("处理秒杀订单消息异常", e);
                     handlePendingList();
@@ -127,9 +136,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                 try {
                     //鑾峰彇pending-list涓殑璁㈠崟淇℃伅
                     List<MapRecord<String, Object, Object>> list = stringRedisTemplate.opsForStream().read(
-                            Consumer.from("g1", "c1"),
+                            Consumer.from(ORDER_CONSUMER_GROUP, ORDER_CONSUMER),
                             StreamReadOptions.empty().count(1),
-                            StreamOffset.create("stream.orders", ReadOffset.from("0"))
+                            StreamOffset.create(ORDER_STREAM_KEY, ReadOffset.from("0"))
                     );
                     //鍒ゆ柇鏄惁鑾峰彇鎴愬姛
                     if(list == null || list.isEmpty()){
@@ -143,14 +152,18 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                     //鍒涘缓璁㈠崟
                     handleVoucherOrder(voucherOrder);
                     //纭娑堟伅宸叉秷璐?
-                    stringRedisTemplate.opsForStream().acknowledge("stream.orders","g1",record.getId());
+                    stringRedisTemplate.opsForStream().acknowledge(ORDER_STREAM_KEY, ORDER_CONSUMER_GROUP, record.getId());
                 } catch (Exception e) {
                     if (!running || Thread.currentThread().isInterrupted()) {
                         break;
                     }
+                    if (isNoGroupError(e)) {
+                        ensureOrderConsumerGroup();
+                        break;
+                    }
                     log.error("处理 pending-list 订单异常", e);
                     try {
-                        Thread.sleep(20);
+                        Thread.sleep(200);
                     } catch (InterruptedException ex) {
                         Thread.currentThread().interrupt();
                         break;
@@ -158,6 +171,41 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                 }
             }
         }
+    }
+
+    private void ensureOrderConsumerGroup() {
+        try {
+            stringRedisTemplate.opsForStream().createGroup(ORDER_STREAM_KEY, ReadOffset.latest(), ORDER_CONSUMER_GROUP);
+            log.info("已初始化秒杀订单消费组: stream={}, group={}", ORDER_STREAM_KEY, ORDER_CONSUMER_GROUP);
+        } catch (Exception e) {
+            if (!groupAlreadyExists(e)) {
+                log.warn("初始化秒杀订单消费组失败, stream={}, group={}", ORDER_STREAM_KEY, ORDER_CONSUMER_GROUP, e);
+            }
+        }
+    }
+
+    private boolean groupAlreadyExists(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            String message = current.getMessage();
+            if (message != null && message.contains("BUSYGROUP")) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private boolean isNoGroupError(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            String message = current.getMessage();
+            if (message != null && message.contains("NOGROUP")) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     /*private BlockingQueue<VoucherOrder> orderTasks = new ArrayBlockingQueue<>(1024*1024);

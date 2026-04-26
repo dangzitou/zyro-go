@@ -8,7 +8,9 @@ import com.hmdp.dto.AgentExecutionPlan;
 import com.hmdp.dto.AiChatRequest;
 import com.hmdp.dto.AiChatResponse;
 import com.hmdp.dto.AiRetrievalHit;
+import com.hmdp.dto.ShopRecommendationDTO;
 import com.hmdp.dto.UserDTO;
+import com.hmdp.entity.UserInfo;
 import com.hmdp.service.IAgentAuditService;
 import com.hmdp.service.IAgentPlanningService;
 import com.hmdp.service.IAiKnowledgeService;
@@ -162,6 +164,72 @@ class AiAgentServiceImplTest {
 
         service.clearSession("default");
         assertTrue(chatMemory.get("agent-session:7:default").isEmpty());
+    }
+
+    @Test
+    void shouldReturnNearbyEmptyMessageInsteadOfGlobalFallback() {
+        AiProperties properties = new AiProperties();
+        properties.setEnabled(true);
+        properties.setKnowledgeEnabled(false);
+        properties.setRecursiveToolLoopEnabled(false);
+
+        IAiKnowledgeService knowledgeService = mock(IAiKnowledgeService.class);
+        IAgentPlanningService planningService = mock(IAgentPlanningService.class);
+        IAgentAuditService auditService = mock(IAgentAuditService.class);
+        LocalLifeRagService ragService = mock(LocalLifeRagService.class);
+        LocalLifeAgentTools localLifeAgentTools = mock(LocalLifeAgentTools.class);
+        IUserInfoService userInfoService = mock(IUserInfoService.class);
+        stubEmptyTools(localLifeAgentTools);
+
+        when(planningService.plan(anyString())).thenReturn(
+                new AgentExecutionPlan("recommendation", false, true, "附近 火锅", "concise", "compare_candidates",
+                        List.of("recommend_shops", "search_shops"))
+        );
+        when(localLifeAgentTools.recommendShops(anyString(), any(), any(), any(), any(), any(), anyInt()))
+                .thenReturn(List.<ShopRecommendationDTO>of());
+        when(localLifeAgentTools.searchShops(anyString(), any(), anyInt()))
+                .thenReturn(List.of());
+
+        UserInfo userInfo = new UserInfo();
+        userInfo.setUserId(1L);
+        userInfo.setCity("广州市");
+        userInfo.setAddress("广州市天河区枫叶路加拿大小区");
+        userInfo.setLocationX(113.328970D);
+        userInfo.setLocationY(23.136996D);
+        when(userInfoService.getById(1L)).thenReturn(userInfo);
+
+        ToolCallbackProvider toolCallbackProvider = () -> new org.springframework.ai.tool.ToolCallback[0];
+        ChatMemory chatMemory = MessageWindowChatMemory.builder()
+                .chatMemoryRepository(new InMemoryChatMemoryRepository())
+                .maxMessages(8)
+                .build();
+
+        AiAgentServiceImpl service = new AiAgentServiceImpl(
+                properties,
+                emptyProvider(),
+                toolCallbackProvider,
+                chatMemory,
+                knowledgeService,
+                planningService,
+                auditService,
+                ragService,
+                new StaticListableBeanFactory().getBeanProvider(org.springframework.ai.model.tool.ToolCallingManager.class),
+                new AgentTraceContext(),
+                localLifeAgentTools,
+                userInfoService
+        );
+
+        UserDTO user = new UserDTO();
+        user.setId(1L);
+        user.setNickName("tester");
+        UserHolder.saveUser(user);
+
+        AiChatRequest request = new AiChatRequest();
+        request.setMessage("推荐我附近的人均150以内火锅店");
+
+        AiChatResponse response = service.chat(request);
+        assertTrue(response.getAnswer().contains("暂时没有找到满足条件的候选店"));
+        assertTrue(response.getToolTrace().stream().anyMatch(line -> line.contains("fallback_prefetch")));
     }
 
     private void stubEmptyTools(LocalLifeAgentTools localLifeAgentTools) {
