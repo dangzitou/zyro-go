@@ -21,6 +21,10 @@ public class AiKnowledgeServiceImpl implements IAiKnowledgeService {
     @Resource
     private LocalLifeRagService localLifeRagService;
 
+    /**
+     * 从本地向量知识库中检索背景知识。
+     * 当前只承载静态规则和说明性内容，不承载动态业务事实。
+     */
     @Override
     public List<AiRetrievalHit> retrieve(String query, Integer topK) {
         if (StrUtil.isBlank(query)) {
@@ -30,6 +34,9 @@ public class AiKnowledgeServiceImpl implements IAiKnowledgeService {
         return retrieveVectorHits(query, limit);
     }
 
+    /**
+     * 把向量检索结果转换成前端和 Agent 都更容易消费的命中结构。
+     */
     private List<AiRetrievalHit> retrieveVectorHits(String query, int limit) {
         List<Document> documents = localLifeRagService.search(query, limit);
         if (documents == null || documents.isEmpty()) {

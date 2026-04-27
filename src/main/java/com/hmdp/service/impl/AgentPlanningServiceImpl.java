@@ -60,6 +60,10 @@ public class AgentPlanningServiceImpl implements IAgentPlanningService {
         this.chatClientBuilderProvider = chatClientBuilderProvider;
     }
 
+    /**
+     * 为用户问题生成结构化执行计划。
+     * 计划会决定后续是否检索、是否使用工具、以及优先用哪些工具。
+     */
     @Override
     public AgentExecutionPlan plan(String message) {
         if (StrUtil.isBlank(message)) {
@@ -98,6 +102,9 @@ public class AgentPlanningServiceImpl implements IAgentPlanningService {
         }
     }
 
+    /**
+     * 对模型生成的计划做兜底修正，防止缺字段或工具选择失真。
+     */
     private AgentExecutionPlan sanitize(AgentExecutionPlan plan, String message) {
         if (plan == null) {
             return fallbackPlan(message);
@@ -136,6 +143,9 @@ public class AgentPlanningServiceImpl implements IAgentPlanningService {
         return plan;
     }
 
+    /**
+     * 当规划模型不可用时，退化到规则启发式计划，保证主流程仍然可用。
+     */
     private AgentExecutionPlan fallbackPlan(String message) {
         String normalized = StrUtil.blankToDefault(message, "").toLowerCase(Locale.ROOT);
         AgentExecutionPlan plan = new AgentExecutionPlan();

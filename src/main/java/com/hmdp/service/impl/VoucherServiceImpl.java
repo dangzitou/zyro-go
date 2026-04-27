@@ -34,6 +34,9 @@ public class VoucherServiceImpl extends ServiceImpl<VoucherMapper, Voucher> impl
     @Resource
     private StringRedisTemplate stringRedisTemplate;
 
+    /**
+     * 查询店铺下的优惠券列表。
+     */
     @Override
     public Result queryVoucherOfShop(Long shopId) {
         // 鏌ヨ浼樻儬鍒镐俊鎭?
@@ -42,6 +45,9 @@ public class VoucherServiceImpl extends ServiceImpl<VoucherMapper, Voucher> impl
         return Result.ok(vouchers);
     }
 
+    /**
+     * 新增秒杀券，并同步写入秒杀表和 Redis 库存。
+     */
     @Override
     @Transactional
     public void addSeckillVoucher(Voucher voucher) {

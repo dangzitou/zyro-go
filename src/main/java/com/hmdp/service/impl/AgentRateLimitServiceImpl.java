@@ -19,16 +19,25 @@ public class AgentRateLimitServiceImpl implements IAgentRateLimitService {
         this.aiProperties = aiProperties;
     }
 
+    /**
+     * 针对普通对话接口尝试获取限流配额。
+     */
     @Override
     public boolean tryAcquireChat(String principalKey) {
         return tryAcquire("chat", principalKey, aiProperties.getRateLimit().getChatMaxRequests());
     }
 
+    /**
+     * 针对流式对话接口尝试获取限流配额。
+     */
     @Override
     public boolean tryAcquireStream(String principalKey) {
         return tryAcquire("stream", principalKey, aiProperties.getRateLimit().getStreamMaxRequests());
     }
 
+    /**
+     * 基于固定时间窗口做计数限流。
+     */
     private boolean tryAcquire(String scene, String principalKey, int maxRequests) {
         if (!aiProperties.getRateLimit().isEnabled()) {
             return true;

@@ -34,6 +34,10 @@ public class AgentAuditServiceImpl implements IAgentAuditService {
         this.agentAuditExecutor = agentAuditExecutor;
     }
 
+    /**
+     * 异步记录 Agent 审计日志。
+     * 这里不会阻塞主请求线程，适合把联调和风控需要的关键字段沉到 Redis Stream。
+     */
     @Override
     public void record(AgentAuditRecord auditRecord) {
         if (!aiProperties.getAudit().isEnabled() || auditRecord == null) {
@@ -72,6 +76,9 @@ public class AgentAuditServiceImpl implements IAgentAuditService {
         });
     }
 
+    /**
+     * 统一把 null 转成空字符串，避免写审计流时出现空值问题。
+     */
     private String safe(Object value) {
         return value == null ? "" : String.valueOf(value);
     }

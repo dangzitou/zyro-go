@@ -100,6 +100,10 @@ public class AiAgentServiceImpl implements IAiAgentService {
         this.userInfoService = userInfoService;
     }
 
+    /**
+     * 同步对话优先走“后端可控链路”：
+     * 先规划、再检索、再预取工具数据；只有预取不够时才把剩余问题交给模型。
+     */
     @Override
     public AiChatResponse chat(AiChatRequest request) {
         long startedAt = System.currentTimeMillis();
@@ -124,6 +128,7 @@ public class AiAgentServiceImpl implements IAiAgentService {
         executionPlan.setRetrievalQuery(retrievalQuery);
         List<AiRetrievalHit> retrievalHits = useKnowledge ? aiKnowledgeService.retrieve(retrievalQuery, topK) : Collections.emptyList();
 
+        // trace 会直接回传给前端，联调时能看到计划、检索和工具调用轨迹。
         traceContext.reset();
         traceContext.record("plan(intent=" + executionPlan.getIntent()
                 + ", useKnowledge=" + useKnowledge
@@ -134,6 +139,7 @@ public class AiAgentServiceImpl implements IAiAgentService {
         }
 
         try {
+            // 推荐、附近、优惠类问题优先由后端主动查数，响应更稳也更容易控事实边界。
             PrefetchedToolContext prefetched = prefetchToolContext(request.getMessage(), executionPlan, currentUser);
             if (prefetched.hasData()) {
                 traceContext.record("fallback_prefetch(answerLines=" + prefetched.lineCount() + ")");
@@ -189,6 +195,10 @@ public class AiAgentServiceImpl implements IAiAgentService {
         }
     }
 
+    /**
+     * 流式接口复用和同步接口相同的计划、检索、预取逻辑，
+     * 只是把最终回答拆成 chunk 连续推送给前端。
+     */
     @Override
     public SseEmitter chatStream(AiChatRequest request) {
         long startedAt = System.currentTimeMillis();
@@ -234,6 +244,7 @@ public class AiAgentServiceImpl implements IAiAgentService {
                     "retrievalHits", retrievalHits
             ));
 
+            // 预取命中时也走统一的 SSE 输出协议，前端不用区分回答来源。
             PrefetchedToolContext prefetched = prefetchToolContext(request.getMessage(), executionPlan, currentUser);
             if (prefetched.hasData()) {
                 streamPlainAnswer(emitter, clientConversationId, prefetched.directAnswer(), retrievalHits, executionPlan, currentUser, request, startedAt);
@@ -297,6 +308,9 @@ public class AiAgentServiceImpl implements IAiAgentService {
         return emitter;
     }
 
+    /**
+     * 清理指定会话的短期记忆。
+     */
     @Override
     public void clearSession(String conversationId) {
         UserDTO currentUser = UserHolder.getUser();
@@ -306,11 +320,18 @@ public class AiAgentServiceImpl implements IAiAgentService {
         chatMemory.clear(storageConversationId(currentUser.getId(), resolveClientConversationId(conversationId)));
     }
 
+    /**
+     * 计划对象是后续整条 Agent 链路的“路由单”，决定要不要检索、要不要用工具、偏向哪些工具。
+     */
     private AgentExecutionPlan resolveExecutionPlan(String message) {
         AgentExecutionPlan plan = agentPlanningService.plan(message);
         return plan == null ? new AgentExecutionPlan() : plan;
     }
 
+    /**
+     * 是否启用知识检索的优先级：
+     * request 显式指定 > planner 结果 > 系统默认配置。
+     */
     private boolean shouldUseKnowledge(AiChatRequest request, AgentExecutionPlan executionPlan) {
         if (request.getUseKnowledge() != null) {
             return request.getUseKnowledge();
@@ -424,6 +445,10 @@ public class AiAgentServiceImpl implements IAiAgentService {
         return builder.toString();
     }
 
+    /**
+     * 这是“后端先出手”的关键兜底层。
+     * 对高频且强业务约束的问题，先直接查真实数据，再决定是否还需要模型继续组织回答。
+     */
     private PrefetchedToolContext prefetchToolContext(String message, AgentExecutionPlan executionPlan, UserDTO currentUser) {
         if (!Boolean.TRUE.equals(executionPlan.getUseTools())
                 || executionPlan.getPreferredTools() == null
@@ -556,6 +581,9 @@ public class AiAgentServiceImpl implements IAiAgentService {
         return PrefetchedToolContext.empty();
     }
 
+    /**
+     * 附近推荐依赖用户画像里保存的经纬度和地址。
+     */
     private UserLocationContext loadUserLocationContext(UserDTO currentUser) {
         if (currentUser == null || currentUser.getId() == null) {
             return UserLocationContext.empty();
@@ -571,6 +599,9 @@ public class AiAgentServiceImpl implements IAiAgentService {
         );
     }
 
+    /**
+     * 从自然语言里剥掉“帮我、推荐、附近、预算”之类噪音词，保留更像搜索词的部分。
+     */
     private String extractKeyword(String message) {
         String normalized = message.replace("帮我", "")
                 .replace("请帮我", "")
@@ -600,6 +631,9 @@ public class AiAgentServiceImpl implements IAiAgentService {
         return StrUtil.blankToDefault(StrUtil.subBefore(normalized.trim(), "店", false), normalized.trim());
     }
 
+    /**
+     * 当用户没有显式给类目 ID 时，用关键词做一层轻量类目猜测，方便工具和推荐服务快速收敛。
+     */
     private Integer guessTypeId(String message) {
         String normalized = message.toLowerCase(Locale.ROOT);
         if (containsAny(normalized, "ktv")) {

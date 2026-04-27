@@ -1,33 +1,26 @@
 package com.hmdp.controller;
 
-
 import com.hmdp.dto.Result;
 import com.hmdp.service.IVoucherOrderService;
-import com.hmdp.service.IVoucherService;
+import jakarta.annotation.Resource;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import jakarta.annotation.Resource;
-
-/**
- * <p>
- *  鍓嶇鎺у埗鍣?
- * </p>
- *
- * @author 铏庡摜
- * @since 2021-12-22
- */
 @RestController
 @RequestMapping("/voucher-order")
 public class VoucherOrderController {
+
     @Resource
     private IVoucherOrderService voucherOrderService;
 
+    /**
+     * 秒杀下单入口。
+     * 会走库存校验、幂等校验和异步下单链路。
+     */
     @PostMapping("seckill/{id}")
     public Result seckillVoucher(@PathVariable("id") Long voucherId) {
         return voucherOrderService.secKill(voucherId);
     }
 }
-

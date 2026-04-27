@@ -41,6 +41,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
     @Resource
     private StringRedisTemplate stringRedisTemplate;
 
+    /**
+     * 发送手机验证码，并把验证码短期缓存到 Redis。
+     */
     @Override
     public Result sendCode(String phone) {
         //1.鏍￠獙鎵嬫満鍙?
@@ -61,6 +64,10 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
      * 鐧诲綍鍔熻兘
      * @param loginForm 鐧诲綍鍙傛暟锛屽寘鍚墜鏈哄彿銆侀獙璇佺爜锛涙垨鑰呮墜鏈哄彿銆佸瘑鐮?
      * @return 缁撴灉
+     */
+    /**
+     * 手机号加验证码登录。
+     * 首次登录会自动创建用户，并把登录态写入 Redis。
      */
     @Override
     public Result login(LoginFormDTO loginForm) {
@@ -102,12 +109,19 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         return Result.ok(token);
     }
 
+    /**
+     * 退出登录。
+     * 当前实现主要是清理线程上下文里的用户信息。
+     */
     @Override
     public Result logout() {
         UserHolder.removeUser();
         return Result.ok();
     }
 
+    /**
+     * 用户签到，把当月签到状态写入 Redis Bitmap。
+     */
     @Override
     public Result sign() {
         Long userId = UserHolder.getUser().getId();
@@ -122,6 +136,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         return Result.ok();
     }
 
+    /**
+     * 统计当前用户的连续签到天数。
+     */
     @Override
     public Result signCount() {
         Long userId = UserHolder.getUser().getId();
@@ -150,6 +167,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         return Result.ok(result);
     }
 
+    /**
+     * 首次登录时创建新用户。
+     */
     private User createUserWithPhone(String phone){
         User user = new User();
         user.setPhone(phone);

@@ -60,6 +60,12 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
     @Resource
     private StringRedisTemplate stringRedisTemplate;
 
+    /**
+     * 推荐链路分成三步：
+     * 1. 先做候选召回，尽量把“附近 + 类目 + 关键词”相关的店捞出来。
+     * 2. 再做轻量粗排，避免对过多候选触发券/博客查询造成 N+1 压力。
+     * 3. 最后只富化前排候选，产出可直接给 Agent 组织答案的推荐卡片。
+     */
     @Override
     public List<ShopRecommendationDTO> recommendShops(String keyword, Integer typeId, Long maxBudget,
                                                       Double x, Double y, Boolean couponOnly, Integer limit) {
@@ -71,6 +77,7 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
             return Collections.emptyList();
         }
 
+        // 这里只做轻量过滤和粗排，避免所有候选都去查优惠券和博客。
         List<Shop> shortlisted = candidates.stream()
                 .filter(shop -> matchesBudget(shop, maxBudget) && matchesKeyword(shop, normalizedKeyword))
                 .sorted(Comparator.comparingDouble((Shop shop) -> baseCandidateScore(shop, normalizedKeyword, x, y)).reversed())
@@ -98,6 +105,10 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
         return recommendations;
     }
 
+    /**
+     * 富化候选数量不跟召回量完全一致，而是按最终返回条数放大几倍。
+     * 这样既能保留排序余量，也能控制数据库查询成本。
+     */
     private long resolveEnrichmentLimit(int resultLimit, Boolean couponOnly) {
         long limit = Math.max((long) resultLimit * ENRICHMENT_MULTIPLIER, MIN_ENRICHMENT_CANDIDATES);
         if (Boolean.TRUE.equals(couponOnly)) {
@@ -106,6 +117,12 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
         return Math.min(limit, MAX_ENRICHMENT_CANDIDATES);
     }
 
+    /**
+     * 候选召回优先级：
+     * 1. 有定位时先走 Redis GEO，优先捞“真的在附近”的门店。
+     * 2. GEO 不够时，再补数据库模糊查询结果。
+     * 3. 关键词太窄时，最后再补一层类目级候选，避免完全无召回。
+     */
     private List<Shop> loadCandidates(String keyword, Integer typeId, Long maxBudget, Double x, Double y, boolean useLocation) {
         Map<Long, Shop> merged = new LinkedHashMap<Long, Shop>();
         if (useLocation && typeId != null) {
@@ -121,6 +138,9 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
         return new ArrayList<Shop>(merged.values());
     }
 
+    /**
+     * 用 LinkedHashMap 去重，既保留先召回结果的优先级，也避免同一门店被多次富化。
+     */
     private void mergeCandidates(Map<Long, Shop> merged, List<Shop> candidates) {
         for (Shop shop : candidates) {
             if (shop != null && shop.getId() != null) {
@@ -129,6 +149,10 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
         }
     }
 
+    /**
+     * Redis GEO 用来承接“附近”语义。
+     * 返回后会把距离回填到 Shop 上，后面排序和回答都能直接复用。
+     */
     private List<Shop> loadNearbyCandidates(Integer typeId, Double x, Double y) {
         if (typeId == null || x == null || y == null || stringRedisTemplate == null) {
             return Collections.emptyList();
@@ -164,6 +188,9 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
         return shops;
     }
 
+    /**
+     * 关键词主召回负责“精准一点”的命中，适合火锅、咖啡、烧烤这类明确意图。
+     */
     private List<Shop> loadPrimaryDbCandidates(String keyword, Integer typeId, Long maxBudget, int limit) {
         return shopService.query()
                 .like(StrUtil.isNotBlank(keyword), "name", keyword)
@@ -173,6 +200,9 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
                 .list();
     }
 
+    /**
+     * 补召回不带关键词过滤，目的是在数据稀疏时兜底，不让“附近推荐”直接空掉。
+     */
     private List<Shop> loadSupplementDbCandidates(Integer typeId, Long maxBudget, int limit) {
         return shopService.query()
                 .eq(typeId != null, "type_id", typeId)
@@ -204,6 +234,9 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
                 .list();
     }
 
+    /**
+     * DTO 是给 Agent 用的“可解释推荐卡片”，不仅有基础字段，还带推荐理由和排序分。
+     */
     private ShopRecommendationDTO buildRecommendation(Shop shop, List<Voucher> vouchers, List<Blog> blogs,
                                                       Double x, Double y, String keyword) {
         ShopRecommendationDTO dto = new ShopRecommendationDTO();
@@ -268,6 +301,10 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
         return tags;
     }
 
+    /**
+     * 最终排序是多信号叠加：
+     * 评分、评论量、优惠、距离、内容新鲜度、关键词匹配都会参与打分。
+     */
     private Double calculateScore(Shop shop, ShopRecommendationDTO dto, List<Blog> blogs, String keyword) {
         double ratingScore = shop.getScore() == null ? 0D : shop.getScore() / 10.0D;
         double commentScore = shop.getComments() == null ? 0D : Math.min(shop.getComments() / 200.0D, 1.5D);
@@ -297,6 +334,9 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
         return maxBudget == null || shop.getAvgPrice() == null || shop.getAvgPrice() <= maxBudget;
     }
 
+    /**
+     * 粗排分数只依赖轻量字段，保证召回阶段足够快。
+     */
     private double baseCandidateScore(Shop shop, String keyword, Double x, Double y) {
         double score = textualMatchScore(shop, keyword);
         score += shop.getScore() == null ? 0D : shop.getScore() / 10.0D;
@@ -315,6 +355,10 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
         return StrUtil.isBlank(keyword) || textualMatchScore(shop, keyword) > 0D;
     }
 
+    /**
+     * 关键词命中不只看店名，也看商圈和地址。
+     * 这样“天河区咖啡”“枫叶路火锅”这类自然表达也能命中。
+     */
     private double textualMatchScore(Shop shop, String keyword) {
         if (shop == null || StrUtil.isBlank(keyword)) {
             return 0D;
@@ -337,6 +381,9 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
         return score;
     }
 
+    /**
+     * 把用户自然语言里的“推荐、店铺、门店”之类噪音词剥掉，再拆出品类词和地址词。
+     */
     private List<String> buildKeywordVariants(String keyword) {
         Set<String> variants = new LinkedHashSet<String>();
         String normalized = keyword.toLowerCase(Locale.ROOT).trim();

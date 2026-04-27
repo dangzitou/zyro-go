@@ -71,12 +71,18 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     private volatile boolean running = true;
     private Future<?> orderHandlerFuture;
 
+    /**
+     * 服务启动后初始化 Redis Stream 消费组，并拉起异步订单处理线程。
+     */
     @PostConstruct
     private void init(){
         ensureOrderConsumerGroup();
         orderHandlerFuture = SECKILL_ORDER_EXECUTOR.submit(new VoucherOrderHandler());
     }
 
+    /**
+     * 服务关闭前优雅停止异步订单线程。
+     */
     @PreDestroy
     private void destroy() {
         running = false;
@@ -173,6 +179,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         }
     }
 
+    /**
+     * 确保秒杀订单消费组存在，避免首次消费时出现 NOGROUP。
+     */
     private void ensureOrderConsumerGroup() {
         try {
             stringRedisTemplate.opsForStream().createGroup(ORDER_STREAM_KEY, ReadOffset.latest(), ORDER_CONSUMER_GROUP);
@@ -225,6 +234,10 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         }
     }*/
 
+    /**
+     * 实际处理秒杀订单。
+     * 这里先按用户加分布式锁，避免同一用户并发重复下单。
+     */
     private void handleVoucherOrder(VoucherOrder voucherOrder) {
         Long userId = voucherOrder.getUserId();
         //鍒涘缓閿佸璞?
@@ -253,6 +266,10 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         SECKILL_SCRIPT.setResultType(Long.class);
     }
 
+    /**
+     * 秒杀下单入口。
+     * 这里主要做资格判断、库存校验和异步入队，不在入口线程里直接创建订单。
+     */
     @Override
     public Result secKill(Long voucherId){
         //鐢ㄦ埛id
@@ -353,6 +370,10 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         }
     }*/
 
+    /**
+     * 真正创建订单的事务方法。
+     * 这里负责一人一单校验、扣减库存和落库，必须放在事务里执行。
+     */
     @Transactional
     public void createVoucherOrder(VoucherOrder voucherOrder) {
         //涓€浜轰竴鍗?

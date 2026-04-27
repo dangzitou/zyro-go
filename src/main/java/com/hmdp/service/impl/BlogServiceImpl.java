@@ -56,6 +56,9 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
     @Autowired
     private StringRedisTemplate stringRedisTemplate;
 
+    /**
+     * 查询热门博客列表，并补齐作者信息和当前用户点赞态。
+     */
     @Override
     public Result queryHotBlog(Integer current) {
         // 鏍规嵁鐢ㄦ埛鏌ヨ
@@ -76,6 +79,9 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         return Result.ok(records);
     }
 
+    /**
+     * 根据博客 id 查询博客详情。
+     */
     @Override
     public Result queryByBlogId(Long id) {
         //鏌ヨblog
@@ -92,6 +98,9 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         return Result.ok(blog);
     }
 
+    /**
+     * 给博客补齐“当前登录用户是否点赞过”的状态。
+     */
     private void isBlogLiked(Blog blog) {
         UserDTO user = UserHolder.getUser();
         if (user == null){
@@ -106,6 +115,9 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         blog.setIsLike(score != null);
     }
 
+    /**
+     * 点赞或取消点赞博客，并同步更新 Redis 点赞集合。
+     */
     @Override
     public Result likeBlog(Long id) {
         //鑾峰彇鐢ㄦ埛id
@@ -130,6 +142,9 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         return Result.ok();
     }
 
+    /**
+     * 查询某篇博客点赞榜前几位用户。
+     */
     @Override
     public Result queryBlogLikes(Long id) {
         String key = BLOG_LIKED_KEY + id;
@@ -151,6 +166,9 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         return Result.ok(userDTOS);
     }
 
+    /**
+     * 发布博客，并把新动态推送到粉丝收件箱。
+     */
     @Override
     public Result saveBlog(Blog blog) {
         // 鑾峰彇鐧诲綍鐢ㄦ埛
@@ -170,6 +188,9 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         return Result.fail("绗旇淇濆瓨澶辫触");
     }
 
+    /**
+     * 查询关注流博客，使用滚动分页适配时间线场景。
+     */
     @Override
     public Result queryBlogOfFollow(Long max, Integer offset) {
         Long userId = UserHolder.getUser().getId();

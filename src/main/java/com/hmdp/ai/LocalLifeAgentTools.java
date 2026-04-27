@@ -43,6 +43,9 @@ public class LocalLifeAgentTools {
         this.traceContext = traceContext;
     }
 
+    /**
+     * 先给模型一个轻量候选列表，适合“先搜再追问详情”的场景。
+     */
     @Tool(name = "search_shops", description = "Search shops by keyword and optional category, return concise shop cards.")
     public List<ShopCard> searchShops(
             @ToolParam(required = false, description = "Keyword such as 火锅, 咖啡, 烧烤") String keyword,
@@ -60,6 +63,9 @@ public class LocalLifeAgentTools {
         return result;
     }
 
+    /**
+     * 单店详情工具只回答强事实字段，避免一次把无关数据都塞给模型。
+     */
     @Tool(name = "get_shop_detail", description = "Fetch one shop detail for factual fields such as price, score, address and opening hours.")
     public ShopDetail getShopDetail(@ToolParam(description = "Shop id from previous search results") Long shopId) {
         Shop shop = shopService.getById(shopId);
@@ -77,6 +83,9 @@ public class LocalLifeAgentTools {
         return detail;
     }
 
+    /**
+     * 优惠券工具承接“有没有券、哪张更划算”这类动态业务问题。
+     */
     @Tool(name = "get_shop_coupons", description = "Fetch active coupons of a shop. Useful when the user asks about deals or discounts.")
     public List<CouponCard> getShopCoupons(@ToolParam(description = "Shop id from previous search or recommendation results") Long shopId) {
         List<CouponCard> result = loadVouchers(shopId).stream()
@@ -95,6 +104,9 @@ public class LocalLifeAgentTools {
         return result;
     }
 
+    /**
+     * 博客工具提供的是热度和口碑信号，不属于知识库里的静态事实。
+     */
     @Tool(name = "get_hot_blogs", description = "Fetch recent hot review blogs for trend and social proof signals.")
     public List<BlogCard> getHotBlogs(@ToolParam(required = false, description = "Number of blog cards to return, default 5") Integer limit) {
         int size = limit == null ? DEFAULT_LIMIT : Math.max(1, Math.min(limit, 10));
@@ -116,6 +128,9 @@ public class LocalLifeAgentTools {
         return result;
     }
 
+    /**
+     * 推荐工具直接走业务排序逻辑，把“推荐权”收在后端，而不是交给模型主观比较。
+     */
     @Tool(name = "recommend_shops", description = "Recommend shops with business-side ranking based on keyword, budget, location and coupon preference.")
     public List<ShopRecommendationDTO> recommendShops(
             @ToolParam(required = false, description = "Keyword such as 火锅, 咖啡, 烧烤") String keyword,
@@ -131,6 +146,9 @@ public class LocalLifeAgentTools {
         return result;
     }
 
+    /**
+     * 统一把 Result 包装拆成 Voucher 领域对象，方便工具层后续复用。
+     */
     private List<Voucher> loadVouchers(Long shopId) {
         Result result = voucherService.queryVoucherOfShop(shopId);
         Object data = result.getData();

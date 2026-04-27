@@ -36,6 +36,10 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
     @Resource
     private IUserService userService;
 
+    /**
+     * 关注或取关用户。
+     * 同时会把关注关系同步到 Redis Set，方便后续做共同关注计算。
+     */
     @Override
     public Result follow(Long followUserId, Boolean isFollow) {
         //鑾峰彇鐧诲綍鐢ㄦ埛
@@ -63,6 +67,9 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
         return Result.ok();
     }
 
+    /**
+     * 判断当前登录用户是否已关注目标用户。
+     */
     @Override
     public Result isFollow(Long followUserId) {
         Long userId = UserHolder.getUser().getId();
@@ -70,6 +77,9 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
         return Result.ok(count > 0);
     }
 
+    /**
+     * 查询当前用户与目标用户的共同关注列表。
+     */
     @Override
     public Result followCommons(Long followUserId) {
         //鑾峰彇鐧诲綍鐢ㄦ埛

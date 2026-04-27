@@ -55,6 +55,10 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
      * @param id 鍟嗛摵id
      * @return 鍟嗛摵璇︽儏鏁版嵁
      */
+    /**
+     * 根据店铺 id 查询店铺详情。
+     * 这里优先走缓存，避免热点店铺反复直接打数据库。
+     */
     @Override
     public Result queryShopById(Long id) {
         //瑙ｅ喅缂撳瓨绌块€?
@@ -74,6 +78,9 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
      * @param shop 鍟嗛摵鏁版嵁
      * @return 鏃?
      */
+    /**
+     * 更新店铺信息，并主动清理对应缓存。
+     */
     @Override
     @Transactional
     public Result update(Shop shop) {
@@ -90,6 +97,10 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         return Result.ok();
     }
 
+    /**
+     * 按类型分页查询店铺。
+     * 有坐标时走 Redis GEO 做附近查询，没有坐标时退化成普通分页。
+     */
     @Override
     public Result queryShopByType(Integer typeId, Integer current, Double x, Double y) {
         //鍒ゆ柇鏄惁闇€瑕佹牴鎹潗鏍囨煡璇?

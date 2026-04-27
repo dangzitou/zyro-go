@@ -34,6 +34,10 @@ public class ShopTypeServiceImpl extends ServiceImpl<ShopTypeMapper, ShopType> i
      * 鏌ヨ鍟嗛摵绫诲瀷鍒楄〃
      * @return 鍟嗛摵绫诲瀷鍒楄〃
      */
+    /**
+     * 查询店铺类型列表。
+     * 优先从 Redis List 读取，缓存未命中时再查数据库并回填缓存。
+     */
     @Override
     public Result queryTypeList() {
         String key = CACHE_TYPE_LIST;
