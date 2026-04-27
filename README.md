@@ -5,8 +5,8 @@
 </p>
 
 <p align="center">
-  <a href="#中文">中文</a> |
-  <a href="#english">English</a>
+  <a href="#zh">中文</a> |
+  <a href="#en">English</a>
 </p>
 
 <p align="center">
@@ -19,12 +19,14 @@
 </p>
 
 <p align="center">
-  <a href="#overview">Overview</a> ·
-  <a href="#highlights">Highlights</a> ·
-  <a href="#quick-start">Quick Start</a> ·
-  <a href="#api--ops">API & Ops</a> ·
+  <a href="#overview">Overview</a> |
+  <a href="#highlights">Highlights</a> |
+  <a href="#quick-start-en">Quick Start</a> |
+  <a href="#api--ops">API &amp; Ops</a> |
   <a href="#documentation">Documentation</a>
 </p>
+
+<a id="zh"></a>
 
 ## 中文
 
@@ -32,7 +34,7 @@
 
 `zyro-local` 是一个面向本地生活场景的企业级 Agent 后端项目。它保留了原有 Redis 高并发业务主链路，并在此基础上补齐了规划、RAG、工具调用、会话记忆、流式输出、限流、审计与基础可观测能力。
 
-这个项目不是简单的聊天接口套壳，而是一个可以部署、联调、压测、继续工程化演进的 Java Agent backend。
+这个项目不是简单的聊天接口套壳，而是一个可以部署、联调、压测、持续工程化演进的 Java Agent backend。
 
 ### 核心特性
 
@@ -54,6 +56,8 @@
 | ORM | MyBatis-Plus 3.5.15 |
 | Ops | Spring Boot Actuator, Prometheus |
 | Build | Maven |
+
+<a id="quick-start-zh"></a>
 
 ### 快速开始
 
@@ -120,9 +124,9 @@ java -jar target/hm-dianping-0.0.1-SNAPSHOT.jar --spring.profiles.active=prod
 本项目当前常用本地联调启动参数示例：
 
 ```bash
-java -jar target/hm-dianping-0.0.1-SNAPSHOT.jar \
-  --spring.data.redis.password= \
-  --hmdp.ai.embedding.provider=local-hash \
+java -jar target/hm-dianping-0.0.1-SNAPSHOT.jar ^
+  --spring.data.redis.password= ^
+  --hmdp.ai.embedding.provider=local-hash ^
   --hmdp.ai.rag-rebuild-on-startup=false
 ```
 
@@ -157,14 +161,14 @@ mvn -Dtest=ShopRecommendationServiceImplTest,AiAgentServiceImplTest test
 
 ```text
 src/main/java/com/hmdp
-├─ ai                # Agent tools, trace, RAG support
-├─ config            # Spring, AI, Redis, observability config
-├─ controller        # HTTP endpoints
-├─ dto               # Request / response models
-├─ entity            # MySQL entities
-├─ interceptor       # Login, token refresh, rate limit
-├─ service           # Business and agent services
-└─ utils             # Redis, cache, auth, helper utilities
+|- ai                # Agent tools, trace, RAG support
+|- config            # Spring, AI, Redis, observability config
+|- controller        # HTTP endpoints
+|- dto               # Request / response models
+|- entity            # MySQL entities
+|- interceptor       # Login, token refresh, rate limit
+|- service           # Business and agent services
+`- utils             # Redis, cache, auth, helper utilities
 ```
 
 ### 文档
@@ -172,6 +176,8 @@ src/main/java/com/hmdp
 - [Architecture](docs/AGENT_ARCHITECTURE.md)
 - [API](docs/AGENT_API.md)
 - [Interview Notes](AI_AGENT_INTERVIEW_PREP.md)
+
+<a id="en"></a>
 
 ## English
 
@@ -201,6 +207,8 @@ This project is designed as a practical Java agent backend rather than a thin ch
 | ORM | MyBatis-Plus 3.5.15 |
 | Ops | Spring Boot Actuator, Prometheus |
 | Build | Maven |
+
+<a id="quick-start-en"></a>
 
 ### Quick Start
 
@@ -267,9 +275,9 @@ java -jar target/hm-dianping-0.0.1-SNAPSHOT.jar --spring.profiles.active=prod
 A commonly used local verification startup command:
 
 ```bash
-java -jar target/hm-dianping-0.0.1-SNAPSHOT.jar \
-  --spring.data.redis.password= \
-  --hmdp.ai.embedding.provider=local-hash \
+java -jar target/hm-dianping-0.0.1-SNAPSHOT.jar ^
+  --spring.data.redis.password= ^
+  --hmdp.ai.embedding.provider=local-hash ^
   --hmdp.ai.rag-rebuild-on-startup=false
 ```
 
@@ -304,14 +312,14 @@ Operational endpoints:
 
 ```text
 src/main/java/com/hmdp
-├─ ai                # Agent tools, trace, and RAG support
-├─ config            # Spring, AI, Redis, and observability config
-├─ controller        # HTTP endpoints
-├─ dto               # Request / response models
-├─ entity            # MySQL entities
-├─ interceptor       # Login, token refresh, and rate limit
-├─ service           # Business and agent services
-└─ utils             # Redis, cache, auth, and helper utilities
+|- ai                # Agent tools, trace, and RAG support
+|- config            # Spring, AI, Redis, and observability config
+|- controller        # HTTP endpoints
+|- dto               # Request / response models
+|- entity            # MySQL entities
+|- interceptor       # Login, token refresh, and rate limit
+|- service           # Business and agent services
+`- utils             # Redis, cache, auth, and helper utilities
 ```
 
 ### Documentation
