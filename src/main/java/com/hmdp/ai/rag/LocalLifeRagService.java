@@ -17,7 +17,9 @@ import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -27,14 +29,17 @@ public class LocalLifeRagService {
 
     private final AiProperties aiProperties;
     private final ObjectProvider<EmbeddingModel> embeddingModelProvider;
+    private final List<RagKnowledgeSource> knowledgeSources;
 
     private volatile SimpleVectorStore vectorStore;
     private volatile boolean ready;
 
     public LocalLifeRagService(AiProperties aiProperties,
-                               ObjectProvider<EmbeddingModel> embeddingModelProvider) {
+                               ObjectProvider<EmbeddingModel> embeddingModelProvider,
+                               List<RagKnowledgeSource> knowledgeSources) {
         this.aiProperties = aiProperties;
         this.embeddingModelProvider = embeddingModelProvider;
+        this.knowledgeSources = knowledgeSources == null ? List.of() : knowledgeSources;
     }
 
     @PostConstruct
@@ -111,7 +116,7 @@ public class LocalLifeRagService {
     }
 
     private void rebuildIndex(SimpleVectorStore store, File storeFile) {
-        List<Document> documents = buildStaticKnowledgeDocuments();
+        List<Document> documents = buildKnowledgeDocuments();
         if (documents.isEmpty()) {
             log.warn("No knowledge documents found, vector RAG remains disabled.");
             return;
@@ -121,7 +126,7 @@ public class LocalLifeRagService {
         store.save(storeFile);
         this.vectorStore = store;
         this.ready = true;
-        log.info("Rebuilt vector store with {} guide documents at {}", documents.size(), storeFile.getAbsolutePath());
+        log.info("Rebuilt vector store with {} knowledge chunks at {}", documents.size(), storeFile.getAbsolutePath());
     }
 
     private File resolveStoreFile() {
@@ -140,23 +145,119 @@ public class LocalLifeRagService {
         }
     }
 
-    private List<Document> buildStaticKnowledgeDocuments() {
-        return List.of(
-                Document.builder()
-                        .id("guide:agent")
-                        .text("本系统是本地生活 Agent。遇到推荐类问题时，应优先结合推荐工具、店铺工具和优惠券工具获取事实依据，而不是只依赖语言模型记忆直接回答。")
-                        .metadata(Map.of("sourceType", "guide", "sourceId", 1L, "title", "Agent 使用约束"))
-                        .build(),
-                Document.builder()
-                        .id("guide:dynamic-facts")
-                        .text("涉及价格、优惠券、评分、营业时间、店铺详情等动态业务事实时，必须优先依赖工具调用和数据库查询结果，不能直接编造，也不能把旧向量片段当成当前真实数据。")
-                        .metadata(Map.of("sourceType", "guide", "sourceId", 2L, "title", "动态事实约束"))
-                        .build(),
-                Document.builder()
-                        .id("guide:retrieval-scope")
-                        .text("RAG 只负责静态规则、解释性知识和系统约束增强，不再承载探店博客、店铺内容或任何动态业务信息。")
-                        .metadata(Map.of("sourceType", "guide", "sourceId", 3L, "title", "RAG 范围约束"))
-                        .build()
-        );
+    /**
+     * 当前 RAG 以两层知识组成：
+     * 1. 系统级约束，确保 Agent 知道哪些内容必须走工具。
+     * 2. 可维护的业务知识包，承载客服 FAQ、产品使用说明和运营 SOP。
+     */
+    private List<Document> buildKnowledgeDocuments() {
+        List<RagKnowledgeDocument> knowledgeDocuments = new ArrayList<>();
+        knowledgeDocuments.add(new RagKnowledgeDocument(
+                1L,
+                "guide",
+                "Agent 使用约束",
+                "本系统是本地生活 Agent。遇到推荐类问题时，应优先结合推荐工具、店铺工具和优惠券工具获取事实依据，而不是只依赖语言模型记忆直接回答。",
+                List.of("Agent", "工具调用", "约束"),
+                Map.of("audience", "internal")
+        ));
+        knowledgeDocuments.add(new RagKnowledgeDocument(
+                2L,
+                "guide",
+                "动态事实约束",
+                "涉及价格、优惠券、评分、营业时间、店铺详情等动态业务事实时，必须优先依赖工具调用和数据库查询结果，不能直接编造，也不能把旧向量片段当成当前真实数据。",
+                List.of("动态事实", "工具", "边界"),
+                Map.of("audience", "internal")
+        ));
+        knowledgeDocuments.add(new RagKnowledgeDocument(
+                3L,
+                "guide",
+                "RAG 范围约束",
+                "RAG 只负责静态规则、解释性知识和系统约束增强，不承载店铺实时内容、优惠库存、订单状态或任何强实时业务事实。",
+                List.of("RAG", "范围", "架构"),
+                Map.of("audience", "internal")
+        ));
+
+        for (RagKnowledgeSource knowledgeSource : knowledgeSources) {
+            knowledgeDocuments.addAll(knowledgeSource.loadDocuments());
+        }
+        return toVectorDocuments(knowledgeDocuments);
+    }
+
+    /**
+     * 入库前按句号级切片，提升长知识文档的召回质量。
+     */
+    private List<Document> toVectorDocuments(List<RagKnowledgeDocument> knowledgeDocuments) {
+        if (knowledgeDocuments == null || knowledgeDocuments.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<Document> vectorDocuments = new ArrayList<>();
+        for (RagKnowledgeDocument knowledgeDocument : knowledgeDocuments) {
+            List<String> chunks = splitText(knowledgeDocument.text(), 220);
+            if (chunks.isEmpty()) {
+                continue;
+            }
+            for (int index = 0; index < chunks.size(); index++) {
+                Map<String, Object> metadata = new LinkedHashMap<>();
+                metadata.put("sourceType", knowledgeDocument.sourceType());
+                metadata.put("sourceId", knowledgeDocument.sourceId());
+                metadata.put("title", knowledgeDocument.title());
+                metadata.put("chunkIndex", index);
+                metadata.put("tags", knowledgeDocument.tags() == null ? List.of() : knowledgeDocument.tags());
+                if (knowledgeDocument.metadata() != null && !knowledgeDocument.metadata().isEmpty()) {
+                    metadata.putAll(knowledgeDocument.metadata());
+                }
+                vectorDocuments.add(Document.builder()
+                        .id(knowledgeDocument.sourceType() + ":" + knowledgeDocument.sourceId() + ":" + index)
+                        .text(chunks.get(index))
+                        .metadata(metadata)
+                        .build());
+            }
+        }
+        return vectorDocuments;
+    }
+
+    private List<String> splitText(String text, int maxLength) {
+        if (StrUtil.isBlank(text)) {
+            return Collections.emptyList();
+        }
+        String normalized = text.replace("\r", "").trim();
+        if (normalized.length() <= maxLength) {
+            return List.of(normalized);
+        }
+        List<String> chunks = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        String[] sentences = normalized.split("(?<=[。！？；])");
+        for (String sentence : sentences) {
+            String trimmed = sentence == null ? "" : sentence.trim();
+            if (trimmed.isEmpty()) {
+                continue;
+            }
+            if (trimmed.length() > maxLength) {
+                if (current.length() > 0) {
+                    chunks.add(current.toString());
+                    current.setLength(0);
+                }
+                appendLongSentenceChunks(chunks, trimmed, maxLength);
+                continue;
+            }
+            if (current.length() > 0 && current.length() + trimmed.length() > maxLength) {
+                chunks.add(current.toString());
+                current.setLength(0);
+            }
+            current.append(trimmed);
+        }
+        if (current.length() > 0) {
+            chunks.add(current.toString());
+        }
+        return chunks;
+    }
+
+    private void appendLongSentenceChunks(List<String> chunks, String sentence, int maxLength) {
+        int start = 0;
+        while (start < sentence.length()) {
+            int end = Math.min(start + maxLength, sentence.length());
+            chunks.add(sentence.substring(start, end));
+            start = end;
+        }
     }
 }

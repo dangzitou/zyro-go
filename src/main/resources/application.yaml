@@ -79,6 +79,12 @@ hmdp:
     rag-rebuild-on-startup: ${AI_RAG_REBUILD_ON_STARTUP:false}
     rag-store-file: ${AI_RAG_STORE_FILE:data/ai/hmdp-vector-store.json}
     rag-similarity-threshold: ${AI_RAG_SIMILARITY_THRESHOLD:0.62}
+    blog-rag:
+      enabled: ${AI_BLOG_RAG_ENABLED:true}
+      recent-days: ${AI_BLOG_RAG_RECENT_DAYS:180}
+      min-liked: ${AI_BLOG_RAG_MIN_LIKED:10}
+      max-documents: ${AI_BLOG_RAG_MAX_DOCUMENTS:300}
+      rerank-candidate-limit: ${AI_BLOG_RAG_RERANK_CANDIDATE_LIMIT:12}
     embedding:
       provider: ${AI_EMBEDDING_PROVIDER:auto}
       base-url: ${AI_EMBEDDING_BASE_URL:${AI_BASE_URL:https://api.henng.cn}}

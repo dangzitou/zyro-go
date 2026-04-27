@@ -339,6 +339,7 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
      */
     private double baseCandidateScore(Shop shop, String keyword, Double x, Double y) {
         double score = textualMatchScore(shop, keyword);
+        score += categoryMatchScore(shop, keyword);
         score += shop.getScore() == null ? 0D : shop.getScore() / 10.0D;
         score += shop.getComments() == null ? 0D : Math.min(shop.getComments() / 300.0D, 1.2D);
         Double distance = shop.getDistance();
@@ -352,7 +353,9 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
     }
 
     private boolean matchesKeyword(Shop shop, String keyword) {
-        return StrUtil.isBlank(keyword) || textualMatchScore(shop, keyword) > 0D;
+        return StrUtil.isBlank(keyword)
+                || textualMatchScore(shop, keyword) > 0D
+                || categoryMatchScore(shop, keyword) > 0D;
     }
 
     /**
@@ -430,6 +433,42 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
     private boolean containsText(String source, String keyword) {
         return StrUtil.isNotBlank(source) && StrUtil.isNotBlank(keyword)
                 && source.toLowerCase(Locale.ROOT).contains(keyword);
+    }
+
+    /**
+     * 当用户给的是“海鲜餐厅、约会餐厅”这类长句时，
+     * 这里补一层轻量品类语义匹配，避免必须要求整句命中门店名称。
+     */
+    private double categoryMatchScore(Shop shop, String keyword) {
+        if (shop == null || StrUtil.isBlank(keyword)) {
+            return 0D;
+        }
+        String normalized = keyword.toLowerCase(Locale.ROOT);
+        double score = 0D;
+        if (normalized.contains("海鲜")) {
+            score += containsAnyText(shop, "海鲜", "渔", "酒家", "鲜") ? 1.6D : 0D;
+        }
+        if (normalized.contains("火锅")) {
+            score += containsAnyText(shop, "火锅", "锅", "涮") ? 1.4D : 0D;
+        }
+        if (normalized.contains("咖啡")) {
+            score += containsAnyText(shop, "咖啡", "coffee", "cafe") ? 1.4D : 0D;
+        }
+        if (normalized.contains("烧烤")) {
+            score += containsAnyText(shop, "烧烤", "烤肉", "烤") ? 1.4D : 0D;
+        }
+        return score;
+    }
+
+    private boolean containsAnyText(Shop shop, String... values) {
+        for (String value : values) {
+            if (containsText(shop.getName(), value.toLowerCase(Locale.ROOT))
+                    || containsText(shop.getArea(), value.toLowerCase(Locale.ROOT))
+                    || containsText(shop.getAddress(), value.toLowerCase(Locale.ROOT))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String normalizeKeyword(String keyword) {
