@@ -14,8 +14,8 @@
     <groupId>com.hmdp</groupId>
     <artifactId>hm-dianping</artifactId>
     <version>0.0.1-SNAPSHOT</version>
-    <name>hm-dianping</name>
-    <description>Local-life backend upgraded to a practical Spring AI agent application</description>
+    <name>zyro-local</name>
+    <description>Enterprise local-life agent backend powered by Spring AI and Redis</description>
 
     <properties>
         <java.version>21</java.version>

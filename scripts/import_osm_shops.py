@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Import real-world POI data from OpenStreetMap/Overpass into zyro-go's tb_shop.
+Import real-world POI data from OpenStreetMap/Overpass into zyro-local's tb_shop.
 
 The script keeps real source attributes where available:
 - store name
@@ -363,7 +363,7 @@ def fetch_overpass(query: str) -> dict:
                 req = urllib.request.Request(
                     endpoint,
                     data=query.encode("utf-8"),
-                    headers={"User-Agent": "zyro-go-osm-import/1.0"},
+                    headers={"User-Agent": "zyro-local-osm-import/1.0"},
                 )
                 with urllib.request.urlopen(req, timeout=180) as resp:
                     return json.load(resp)
@@ -588,7 +588,7 @@ def rebuild_redis_geo(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Import OSM shops into zyro-go tb_shop")
+    parser = argparse.ArgumentParser(description="Import OSM shops into zyro-local tb_shop")
     parser.add_argument("--cities", default="beijing,guangzhou,xiamen", help="comma-separated city keys")
     parser.add_argument("--mysql-bin", default=os.environ.get("MYSQL_BIN", "mysql"))
     parser.add_argument("--mysql-host", default=os.environ.get("MYSQL_HOST", "127.0.0.1"))
