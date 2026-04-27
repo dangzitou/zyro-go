@@ -12,6 +12,12 @@ import com.hmdp.service.IShopRecommendationService;
 import com.hmdp.service.IShopService;
 import com.hmdp.service.IVoucherService;
 import org.springframework.stereotype.Service;
+import org.springframework.data.geo.Distance;
+import org.springframework.data.geo.GeoResult;
+import org.springframework.data.geo.GeoResults;
+import org.springframework.data.redis.connection.RedisGeoCommands;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.domain.geo.GeoReference;
 
 import jakarta.annotation.Resource;
 import java.time.LocalDateTime;
@@ -19,14 +25,28 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.LinkedHashSet;
+import java.util.Set;
+
+import static com.hmdp.utils.RedisConstants.SHOP_GEO_KEY;
 
 @Service
 public class ShopRecommendationServiceImpl implements IShopRecommendationService {
 
     private static final int MAX_CANDIDATES = 30;
     private static final int MAX_CANDIDATES_WITH_LOCATION = 200;
+    private static final int MAX_GEO_CANDIDATES = 120;
+    private static final int MIN_LOCATION_CANDIDATES = 12;
+    private static final int ENRICHMENT_MULTIPLIER = 4;
+    private static final int MIN_ENRICHMENT_CANDIDATES = 12;
+    private static final int MAX_ENRICHMENT_CANDIDATES = 24;
+    private static final double GEO_SEARCH_RADIUS_METERS = 8000D;
     private static final double NEARBY_DISTANCE_LIMIT_METERS = 50000D;
+    private static final String[] KEYWORD_HINTS = {"火锅", "咖啡", "烧烤", "奶茶", "酒吧", "KTV", "spa", "美发", "足疗"};
 
     @Resource
     private IShopService shopService;
@@ -37,29 +57,34 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
     @Resource
     private IBlogService blogService;
 
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+
     @Override
     public List<ShopRecommendationDTO> recommendShops(String keyword, Integer typeId, Long maxBudget,
                                                       Double x, Double y, Boolean couponOnly, Integer limit) {
         int resultLimit = limit == null ? 5 : Math.max(1, Math.min(limit, 10));
         boolean useLocation = x != null && y != null;
-        List<Shop> candidates = shopService.query()
-                .like(StrUtil.isNotBlank(keyword), "name", keyword)
-                .eq(typeId != null, "type_id", typeId)
-                .le(maxBudget != null, "avg_price", maxBudget)
-                .last("LIMIT " + (useLocation ? MAX_CANDIDATES_WITH_LOCATION : MAX_CANDIDATES))
-                .list();
+        String normalizedKeyword = normalizeKeyword(keyword);
+        List<Shop> candidates = loadCandidates(normalizedKeyword, typeId, maxBudget, x, y, useLocation);
         if (candidates == null || candidates.isEmpty()) {
             return Collections.emptyList();
         }
 
+        List<Shop> shortlisted = candidates.stream()
+                .filter(shop -> matchesBudget(shop, maxBudget) && matchesKeyword(shop, normalizedKeyword))
+                .sorted(Comparator.comparingDouble((Shop shop) -> baseCandidateScore(shop, normalizedKeyword, x, y)).reversed())
+                .limit(resolveEnrichmentLimit(resultLimit, couponOnly))
+                .toList();
+
         List<ShopRecommendationDTO> recommendations = new ArrayList<ShopRecommendationDTO>();
-        for (Shop shop : candidates) {
+        for (Shop shop : shortlisted) {
             List<Voucher> vouchers = loadVouchers(shop.getId());
             if (Boolean.TRUE.equals(couponOnly) && vouchers.isEmpty()) {
                 continue;
             }
             List<Blog> blogs = loadShopBlogs(shop.getId());
-            ShopRecommendationDTO dto = buildRecommendation(shop, vouchers, blogs, x, y);
+            ShopRecommendationDTO dto = buildRecommendation(shop, vouchers, blogs, x, y, normalizedKeyword);
             if (useLocation && dto.getDistanceMeters() != null && dto.getDistanceMeters() > NEARBY_DISTANCE_LIMIT_METERS) {
                 continue;
             }
@@ -71,6 +96,89 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
             return new ArrayList<ShopRecommendationDTO>(recommendations.subList(0, resultLimit));
         }
         return recommendations;
+    }
+
+    private long resolveEnrichmentLimit(int resultLimit, Boolean couponOnly) {
+        long limit = Math.max((long) resultLimit * ENRICHMENT_MULTIPLIER, MIN_ENRICHMENT_CANDIDATES);
+        if (Boolean.TRUE.equals(couponOnly)) {
+            limit = Math.max(limit, 18L);
+        }
+        return Math.min(limit, MAX_ENRICHMENT_CANDIDATES);
+    }
+
+    private List<Shop> loadCandidates(String keyword, Integer typeId, Long maxBudget, Double x, Double y, boolean useLocation) {
+        Map<Long, Shop> merged = new LinkedHashMap<Long, Shop>();
+        if (useLocation && typeId != null) {
+            mergeCandidates(merged, loadNearbyCandidates(typeId, x, y));
+        }
+        int targetSize = useLocation ? MAX_CANDIDATES_WITH_LOCATION : MAX_CANDIDATES;
+        if (merged.size() < (useLocation ? MIN_LOCATION_CANDIDATES : targetSize)) {
+            mergeCandidates(merged, loadPrimaryDbCandidates(keyword, typeId, maxBudget, targetSize));
+        }
+        if (merged.size() < targetSize && StrUtil.isNotBlank(keyword)) {
+            mergeCandidates(merged, loadSupplementDbCandidates(typeId, maxBudget, targetSize));
+        }
+        return new ArrayList<Shop>(merged.values());
+    }
+
+    private void mergeCandidates(Map<Long, Shop> merged, List<Shop> candidates) {
+        for (Shop shop : candidates) {
+            if (shop != null && shop.getId() != null) {
+                merged.putIfAbsent(shop.getId(), shop);
+            }
+        }
+    }
+
+    private List<Shop> loadNearbyCandidates(Integer typeId, Double x, Double y) {
+        if (typeId == null || x == null || y == null || stringRedisTemplate == null) {
+            return Collections.emptyList();
+        }
+        GeoResults<RedisGeoCommands.GeoLocation<String>> results = stringRedisTemplate.opsForGeo().search(
+                SHOP_GEO_KEY + typeId,
+                GeoReference.fromCoordinate(x, y),
+                new Distance(GEO_SEARCH_RADIUS_METERS),
+                RedisGeoCommands.GeoSearchCommandArgs.newGeoSearchArgs().includeDistance().limit(MAX_GEO_CANDIDATES)
+        );
+        if (results == null || results.getContent().isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<GeoResult<RedisGeoCommands.GeoLocation<String>>> geoHits = results.getContent();
+        List<Long> ids = new ArrayList<Long>(geoHits.size());
+        Map<Long, Double> distanceById = new LinkedHashMap<Long, Double>();
+        for (GeoResult<RedisGeoCommands.GeoLocation<String>> hit : geoHits) {
+            Long shopId = Long.parseLong(hit.getContent().getName());
+            ids.add(shopId);
+            distanceById.put(shopId, hit.getDistance() == null ? null : hit.getDistance().getValue());
+        }
+        if (ids.isEmpty()) {
+            return Collections.emptyList();
+        }
+        String orderedIds = StrUtil.join(",", ids);
+        List<Shop> shops = shopService.query()
+                .in("id", ids)
+                .last("ORDER BY FIELD(id," + orderedIds + ")")
+                .list();
+        for (Shop shop : shops) {
+            shop.setDistance(distanceById.get(shop.getId()));
+        }
+        return shops;
+    }
+
+    private List<Shop> loadPrimaryDbCandidates(String keyword, Integer typeId, Long maxBudget, int limit) {
+        return shopService.query()
+                .like(StrUtil.isNotBlank(keyword), "name", keyword)
+                .eq(typeId != null, "type_id", typeId)
+                .le(maxBudget != null, "avg_price", maxBudget)
+                .last("LIMIT " + limit)
+                .list();
+    }
+
+    private List<Shop> loadSupplementDbCandidates(Integer typeId, Long maxBudget, int limit) {
+        return shopService.query()
+                .eq(typeId != null, "type_id", typeId)
+                .le(maxBudget != null, "avg_price", maxBudget)
+                .last("LIMIT " + limit)
+                .list();
     }
 
     private List<Voucher> loadVouchers(Long shopId) {
@@ -97,7 +205,7 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
     }
 
     private ShopRecommendationDTO buildRecommendation(Shop shop, List<Voucher> vouchers, List<Blog> blogs,
-                                                      Double x, Double y) {
+                                                      Double x, Double y, String keyword) {
         ShopRecommendationDTO dto = new ShopRecommendationDTO();
         dto.setShopId(shop.getId());
         dto.setName(shop.getName());
@@ -108,11 +216,13 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
         dto.setCouponCount(vouchers.size());
         dto.setCouponSummary(buildCouponSummary(vouchers));
         dto.setBlogSummary(buildBlogSummary(blogs));
-        if (x != null && y != null && shop.getX() != null && shop.getY() != null) {
+        if (shop.getDistance() != null) {
+            dto.setDistanceMeters(Math.round(shop.getDistance() * 10D) / 10D);
+        } else if (x != null && y != null && shop.getX() != null && shop.getY() != null) {
             dto.setDistanceMeters(distanceMeters(x, y, shop.getX(), shop.getY()));
         }
-        dto.setReasonTags(buildReasonTags(dto, vouchers, blogs));
-        dto.setRecommendationScore(calculateScore(shop, dto, blogs));
+        dto.setReasonTags(buildReasonTags(shop, dto, vouchers, blogs, keyword));
+        dto.setRecommendationScore(calculateScore(shop, dto, blogs, keyword));
         return dto;
     }
 
@@ -135,7 +245,7 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
         return "Hot post " + title + ", likes=" + top.getLiked();
     }
 
-    private List<String> buildReasonTags(ShopRecommendationDTO dto, List<Voucher> vouchers, List<Blog> blogs) {
+    private List<String> buildReasonTags(Shop shop, ShopRecommendationDTO dto, List<Voucher> vouchers, List<Blog> blogs, String keyword) {
         List<String> tags = new ArrayList<String>();
         if (dto.getScore() != null && dto.getScore() >= 4.5D) {
             tags.add("high_rating");
@@ -152,10 +262,13 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
         if (dto.getAvgPrice() != null && dto.getAvgPrice() <= 80L) {
             tags.add("good_value");
         }
+        if (textualMatchScore(shop, keyword) > 0D) {
+            tags.add("keyword_match");
+        }
         return tags;
     }
 
-    private Double calculateScore(Shop shop, ShopRecommendationDTO dto, List<Blog> blogs) {
+    private Double calculateScore(Shop shop, ShopRecommendationDTO dto, List<Blog> blogs, String keyword) {
         double ratingScore = shop.getScore() == null ? 0D : shop.getScore() / 10.0D;
         double commentScore = shop.getComments() == null ? 0D : Math.min(shop.getComments() / 200.0D, 1.5D);
         double couponScore = dto.getCouponCount() == null ? 0D : Math.min(dto.getCouponCount() * 0.2D, 1D);
@@ -163,6 +276,7 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
         if (dto.getDistanceMeters() != null) {
             distanceScore = Math.max(0D, 1.5D - dto.getDistanceMeters() / 2000.0D);
         }
+        double keywordScore = textualMatchScore(shop, keyword);
         double freshnessScore = 0D;
         if (blogs != null && !blogs.isEmpty()) {
             Blog latest = blogs.stream()
@@ -176,7 +290,111 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
             int likedSum = blogs.stream().map(Blog::getLiked).filter(v -> v != null).mapToInt(Integer::intValue).sum();
             freshnessScore += Math.min(likedSum / 200.0D, 1D);
         }
-        return ratingScore + commentScore + couponScore + distanceScore + freshnessScore;
+        return ratingScore + commentScore + couponScore + distanceScore + freshnessScore + keywordScore;
+    }
+
+    private boolean matchesBudget(Shop shop, Long maxBudget) {
+        return maxBudget == null || shop.getAvgPrice() == null || shop.getAvgPrice() <= maxBudget;
+    }
+
+    private double baseCandidateScore(Shop shop, String keyword, Double x, Double y) {
+        double score = textualMatchScore(shop, keyword);
+        score += shop.getScore() == null ? 0D : shop.getScore() / 10.0D;
+        score += shop.getComments() == null ? 0D : Math.min(shop.getComments() / 300.0D, 1.2D);
+        Double distance = shop.getDistance();
+        if (distance == null && x != null && y != null && shop.getX() != null && shop.getY() != null) {
+            distance = distanceMeters(x, y, shop.getX(), shop.getY());
+        }
+        if (distance != null) {
+            score += Math.max(0D, 1.6D - distance / 1800.0D);
+        }
+        return score;
+    }
+
+    private boolean matchesKeyword(Shop shop, String keyword) {
+        return StrUtil.isBlank(keyword) || textualMatchScore(shop, keyword) > 0D;
+    }
+
+    private double textualMatchScore(Shop shop, String keyword) {
+        if (shop == null || StrUtil.isBlank(keyword)) {
+            return 0D;
+        }
+        List<String> variants = buildKeywordVariants(keyword);
+        double score = 0D;
+        if (containsAnyVariant(shop.getName(), variants)) {
+            score += 1.8D;
+        }
+        if (containsAnyVariant(shop.getArea(), variants)) {
+            score += 0.8D;
+        }
+        if (containsAnyVariant(shop.getAddress(), variants)) {
+            score += 0.6D;
+        }
+        String exactKeyword = keyword.toLowerCase(Locale.ROOT).trim();
+        if (containsText(shop.getName(), exactKeyword)) {
+            score += 0.8D;
+        }
+        return score;
+    }
+
+    private List<String> buildKeywordVariants(String keyword) {
+        Set<String> variants = new LinkedHashSet<String>();
+        String normalized = keyword.toLowerCase(Locale.ROOT).trim();
+        if (StrUtil.isBlank(normalized)) {
+            return Collections.emptyList();
+        }
+        variants.add(normalized);
+        String relaxed = normalized.replace("店铺", "")
+                .replace("商家", "")
+                .replace("门店", "")
+                .replace("推荐", "")
+                .replace("店", "")
+                .trim();
+        if (StrUtil.isNotBlank(relaxed)) {
+            variants.add(relaxed);
+        }
+        String addressPart = relaxed;
+        for (String hint : KEYWORD_HINTS) {
+            String lowerHint = hint.toLowerCase(Locale.ROOT);
+            if (relaxed.contains(lowerHint)) {
+                variants.add(lowerHint);
+                addressPart = addressPart.replace(lowerHint, " ");
+            }
+        }
+        addressPart = addressPart.trim();
+        if (addressPart.length() >= 2) {
+            variants.add(addressPart);
+        }
+        return new ArrayList<String>(variants);
+    }
+
+    private boolean containsAnyVariant(String source, List<String> variants) {
+        if (StrUtil.isBlank(source) || variants == null || variants.isEmpty()) {
+            return false;
+        }
+        for (String variant : variants) {
+            if (containsText(source, variant)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean containsText(String source, String keyword) {
+        return StrUtil.isNotBlank(source) && StrUtil.isNotBlank(keyword)
+                && source.toLowerCase(Locale.ROOT).contains(keyword);
+    }
+
+    private String normalizeKeyword(String keyword) {
+        if (StrUtil.isBlank(keyword)) {
+            return "";
+        }
+        return keyword.replace("附近", "")
+                .replace("周边", "")
+                .replace("推荐", "")
+                .replace("店铺", "")
+                .replace("商家", "")
+                .trim();
     }
 
     private Double distanceMeters(Double userX, Double userY, Double shopX, Double shopY) {

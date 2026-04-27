@@ -10,6 +10,13 @@ import com.hmdp.service.IBlogService;
 import com.hmdp.service.IShopService;
 import com.hmdp.service.IVoucherService;
 import org.junit.jupiter.api.Test;
+import org.springframework.data.geo.Distance;
+import org.springframework.data.geo.GeoResult;
+import org.springframework.data.geo.GeoResults;
+import org.springframework.data.geo.Point;
+import org.springframework.data.redis.connection.RedisGeoCommands;
+import org.springframework.data.redis.core.GeoOperations;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.LocalDateTime;
@@ -17,6 +24,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -103,5 +111,63 @@ class ShopRecommendationServiceImplTest {
         assertFalse(recommendations.isEmpty());
         assertEquals(1L, recommendations.get(0).getShopId());
         assertEquals(1, recommendations.size());
+    }
+
+    @Test
+    void shouldPreferGeoCandidatesAndMatchKeywordAgainstAddress() {
+        IShopService shopService = mock(IShopService.class);
+        IVoucherService voucherService = mock(IVoucherService.class);
+        IBlogService blogService = mock(IBlogService.class);
+        StringRedisTemplate stringRedisTemplate = mock(StringRedisTemplate.class);
+        @SuppressWarnings("unchecked")
+        GeoOperations<String, String> geoOperations = mock(GeoOperations.class);
+        QueryChainWrapper<Shop> shopQuery = mock(QueryChainWrapper.class);
+        QueryChainWrapper<Blog> blogQuery = mock(QueryChainWrapper.class);
+
+        Shop nearbyShop = new Shop();
+        nearbyShop.setId(10L);
+        nearbyShop.setName("天河精品咖啡");
+        nearbyShop.setArea("天河区");
+        nearbyShop.setAddress("广州市天河区枫叶路88号");
+        nearbyShop.setAvgPrice(42L);
+        nearbyShop.setScore(48);
+        nearbyShop.setComments(260);
+        nearbyShop.setTypeId(1L);
+
+        GeoResults<RedisGeoCommands.GeoLocation<String>> geoResults = new GeoResults<>(List.of(
+                new GeoResult<>(new RedisGeoCommands.GeoLocation<>("10", new Point(113.33D, 23.13D)), new Distance(320D))
+        ));
+
+        when(stringRedisTemplate.opsForGeo()).thenReturn(geoOperations);
+        when(geoOperations.search(anyString(), any(), any(Distance.class), any(RedisGeoCommands.GeoSearchCommandArgs.class)))
+                .thenReturn(geoResults);
+        when(shopService.query()).thenReturn(shopQuery);
+        when(shopQuery.in(anyString(), any(List.class))).thenReturn(shopQuery);
+        when(shopQuery.like(anyBoolean(), any(), any())).thenReturn(shopQuery);
+        when(shopQuery.eq(anyBoolean(), any(), any())).thenReturn(shopQuery);
+        when(shopQuery.le(anyBoolean(), any(), any())).thenReturn(shopQuery);
+        when(shopQuery.last(anyString())).thenReturn(shopQuery);
+        when(shopQuery.list()).thenReturn(List.of(nearbyShop));
+
+        when(voucherService.queryVoucherOfShop(10L)).thenReturn(Result.ok(List.of()));
+        when(blogService.query()).thenReturn(blogQuery);
+        when(blogQuery.eq("shop_id", 10L)).thenReturn(blogQuery);
+        when(blogQuery.orderByDesc("liked")).thenReturn(blogQuery);
+        when(blogQuery.orderByDesc("create_time")).thenReturn(blogQuery);
+        when(blogQuery.last(anyString())).thenReturn(blogQuery);
+        when(blogQuery.list()).thenReturn(List.of());
+
+        ShopRecommendationServiceImpl service = new ShopRecommendationServiceImpl();
+        ReflectionTestUtils.setField(service, "shopService", shopService);
+        ReflectionTestUtils.setField(service, "voucherService", voucherService);
+        ReflectionTestUtils.setField(service, "blogService", blogService);
+        ReflectionTestUtils.setField(service, "stringRedisTemplate", stringRedisTemplate);
+
+        List<ShopRecommendationDTO> recommendations = service.recommendShops("天河区", 1, 80L, 113.33, 23.13, false, 5);
+
+        assertEquals(1, recommendations.size());
+        assertEquals(10L, recommendations.get(0).getShopId());
+        assertEquals(320D, recommendations.get(0).getDistanceMeters());
+        assertTrue(recommendations.get(0).getReasonTags().contains("keyword_match"));
     }
 }
