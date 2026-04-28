@@ -1,27 +1,23 @@
 package com.hmdp.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.hmdp.ai.embedding.LocalHashEmbeddingModel;
+import com.hmdp.ai.embedding.EmbeddingProviderFactory;
 import com.hmdp.ai.LocalLifeAgentTools;
 import com.hmdp.ai.RedisChatMemoryRepository;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.ai.document.MetadataMode;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.memory.ChatMemoryRepository;
 import org.springframework.ai.chat.memory.MessageWindowChatMemory;
 import org.springframework.ai.embedding.EmbeddingModel;
-import org.springframework.ai.openai.OpenAiEmbeddingModel;
-import org.springframework.ai.openai.OpenAiEmbeddingOptions;
-import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.util.StringUtils;
 
 import java.time.Duration;
+import java.util.List;
 
 @Slf4j
 @Configuration
@@ -58,69 +54,46 @@ public class AiAgentConfig {
 
     @Bean
     @Primary
-    public EmbeddingModel embeddingModel(AiProperties aiProperties) {
+    public EmbeddingModel embeddingModel(AiProperties aiProperties,
+                                         ObjectMapper objectMapper,
+                                         List<EmbeddingProviderFactory> providerFactories) {
         AiEmbeddingProperties properties = aiProperties.getEmbedding();
-        LocalHashEmbeddingModel localFallback = new LocalHashEmbeddingModel(properties.getLocalDimensions());
         String provider = properties.getProvider() == null ? "auto" : properties.getProvider().trim().toLowerCase();
 
-        if ("local-hash".equals(provider)) {
-            log.info("Using local-hash embedding model with {} dimensions.", localFallback.dimensions());
-            return localFallback;
+        EmbeddingProviderFactory fallbackFactory = providerFactories.stream()
+                .filter(EmbeddingProviderFactory::isFallback)
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("No fallback embedding provider registered."));
+
+        if (!"auto".equals(provider)) {
+            EmbeddingProviderFactory factory = providerFactories.stream()
+                    .filter(candidate -> candidate.provider().equalsIgnoreCase(provider))
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException("Unknown embedding provider: " + provider));
+            EmbeddingModel embeddingModel = factory.create(properties, objectMapper);
+            factory.probe(embeddingModel);
+            log.info("Using embedding provider {} with model {}.", factory.provider(), properties.getModel());
+            return embeddingModel;
         }
 
-        OpenAiEmbeddingModel openAiEmbeddingModel = buildOpenAiEmbeddingModel(properties);
-        if ("openai".equals(provider)) {
-            log.info("Using OpenAI-compatible embedding model {}.", properties.getModel());
-            return openAiEmbeddingModel;
-        }
-
-        try {
-            openAiEmbeddingModel.embed("embedding health check");
-            log.info("Embedding gateway probe succeeded, using remote embedding model {}.", properties.getModel());
-            return openAiEmbeddingModel;
-        } catch (Exception e) {
-            log.warn("Embedding gateway probe failed, fallback to local-hash embeddings. provider={}, model={}, message={}",
-                    provider, properties.getModel(), e.getMessage());
-            return localFallback;
-        }
-    }
-
-    private OpenAiEmbeddingModel buildOpenAiEmbeddingModel(AiEmbeddingProperties properties) {
-        String baseUrl = firstNonBlank(
-                properties.getBaseUrl(),
-                System.getenv("AI_EMBEDDING_BASE_URL"),
-                System.getenv("AI_BASE_URL"),
-                "https://api.openai.com"
-        );
-        String apiKey = firstNonBlank(
-                properties.getApiKey(),
-                System.getenv("AI_EMBEDDING_API_KEY"),
-                System.getenv("AI_API_KEY"),
-                ""
-        );
-        String model = firstNonBlank(
-                properties.getModel(),
-                System.getenv("AI_EMBEDDING_MODEL"),
-                "text-embedding-3-small"
-        );
-
-        OpenAiApi api = OpenAiApi.builder()
-                .baseUrl(baseUrl)
-                .apiKey(apiKey)
-                .build();
-
-        OpenAiEmbeddingOptions options = OpenAiEmbeddingOptions.builder()
-                .model(model)
-                .build();
-        return new OpenAiEmbeddingModel(api, MetadataMode.NONE, options);
-    }
-
-    private String firstNonBlank(String... values) {
-        for (String value : values) {
-            if (StringUtils.hasText(value)) {
-                return value.trim();
+        for (EmbeddingProviderFactory factory : providerFactories) {
+            if (!factory.supportsAuto() || factory.isFallback()) {
+                continue;
+            }
+            try {
+                EmbeddingModel embeddingModel = factory.create(properties, objectMapper);
+                factory.probe(embeddingModel);
+                log.info("Embedding provider probe succeeded, using provider {} with model {}.",
+                        factory.provider(), properties.getModel());
+                return embeddingModel;
+            } catch (Exception e) {
+                log.warn("Embedding provider probe failed, provider={}, model={}, message={}",
+                        factory.provider(), properties.getModel(), e.getMessage());
             }
         }
-        return "";
+
+        EmbeddingModel fallbackModel = fallbackFactory.create(properties, objectMapper);
+        log.warn("All remote embedding providers failed, fallback to provider {}.", fallbackFactory.provider());
+        return fallbackModel;
     }
 }

@@ -90,7 +90,12 @@ public class LocalLifeRagService {
                 .topK(Math.max(1, Math.min(topK, 8)))
                 .similarityThreshold(aiProperties.getRagSimilarityThreshold())
                 .build();
-        return vectorStore.similaritySearch(request);
+        try {
+            return vectorStore.similaritySearch(request);
+        } catch (IllegalArgumentException e) {
+            log.warn("Vector RAG search degraded to empty result. query={}, message={}", query, e.getMessage());
+            return Collections.emptyList();
+        }
     }
 
     public QuestionAnswerAdvisor buildAdvisor(String query, int topK) {

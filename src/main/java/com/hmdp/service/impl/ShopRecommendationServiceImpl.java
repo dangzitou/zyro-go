@@ -2,8 +2,11 @@ package com.hmdp.service.impl;
 
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONUtil;
+import com.hmdp.ai.rag.BaiduMapGeoService;
 import com.hmdp.dto.Result;
+import com.hmdp.dto.ShopRecommendationQuery;
 import com.hmdp.dto.ShopRecommendationDTO;
+import com.hmdp.ai.rag.RestaurantSemanticRetrievalService;
 import com.hmdp.entity.Blog;
 import com.hmdp.entity.Shop;
 import com.hmdp.entity.Voucher;
@@ -12,6 +15,7 @@ import com.hmdp.service.IShopRecommendationService;
 import com.hmdp.service.IShopService;
 import com.hmdp.service.IShopSubCategoryService;
 import com.hmdp.service.IVoucherService;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.data.geo.Distance;
 import org.springframework.data.geo.GeoResult;
@@ -32,9 +36,11 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.LinkedHashSet;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static com.hmdp.utils.RedisConstants.SHOP_GEO_KEY;
 
+@Slf4j
 @Service
 public class ShopRecommendationServiceImpl implements IShopRecommendationService {
 
@@ -47,6 +53,7 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
     private static final int MAX_ENRICHMENT_CANDIDATES = 24;
     private static final double GEO_SEARCH_RADIUS_METERS = 8000D;
     private static final double NEARBY_DISTANCE_LIMIT_METERS = 50000D;
+    private static final double LOCATION_HARD_FILTER_METERS = 8000D;
 
     @Resource
     private IShopService shopService;
@@ -61,6 +68,12 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
     private IShopSubCategoryService shopSubCategoryService;
 
     @Resource
+    private RestaurantSemanticRetrievalService restaurantSemanticRetrievalService;
+
+    @Resource
+    private BaiduMapGeoService baiduMapGeoService;
+
+    @Resource
     private StringRedisTemplate stringRedisTemplate;
 
     /**
@@ -70,40 +83,105 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
      * 3. 最后只富化前排候选，产出可直接给 Agent 组织答案的推荐卡片。
      */
     @Override
-    public List<ShopRecommendationDTO> recommendShops(String keyword, Integer typeId, Long maxBudget,
-                                                      Double x, Double y, Boolean couponOnly, Integer limit) {
-        int resultLimit = limit == null ? 5 : Math.max(1, Math.min(limit, 10));
-        boolean useLocation = x != null && y != null;
-        String normalizedKeyword = normalizeKeyword(keyword);
-        Set<Long> categoryMatchedShopIds = loadMatchedSubCategoryShopIds(normalizedKeyword, typeId);
-        List<Shop> candidates = loadCandidates(normalizedKeyword, typeId, maxBudget, x, y, useLocation, categoryMatchedShopIds);
-        if (candidates == null || candidates.isEmpty()) {
+    public List<ShopRecommendationDTO> recommendShops(ShopRecommendationQuery query) {
+        if (query == null) {
             return Collections.emptyList();
         }
+        return recommendShopsInternal(query);
+    }
+
+    @Override
+    public List<ShopRecommendationDTO> recommendShops(String keyword, Integer typeId, Long maxBudget,
+                                                      String city, String locationHint,
+                                                      Double x, Double y, Boolean couponOnly, Integer limit) {
+        ShopRecommendationQuery query = new ShopRecommendationQuery();
+        query.setKeyword(keyword);
+        query.setTypeId(typeId);
+        query.setMaxBudget(maxBudget);
+        query.setCity(city);
+        query.setLocationHint(locationHint);
+        query.setX(x);
+        query.setY(y);
+        query.setCouponOnly(couponOnly);
+        query.setLimit(limit);
+        return recommendShopsInternal(query);
+    }
+
+    private List<ShopRecommendationDTO> recommendShopsInternal(ShopRecommendationQuery query) {
+        Double effectiveX = query.getX();
+        Double effectiveY = query.getY();
+        boolean explicitGeoResolved = false;
+        if (StrUtil.isNotBlank(query.getLocationHint()) && (effectiveX == null || effectiveY == null)) {
+            BaiduMapGeoService.GeoPoint geoPoint = baiduMapGeoService.geocode(query.getCity(), query.getLocationHint());
+            if (geoPoint != null) {
+                effectiveX = geoPoint.lng();
+                effectiveY = geoPoint.lat();
+                explicitGeoResolved = true;
+            }
+        }
+        final Double finalX = effectiveX;
+        final Double finalY = effectiveY;
+        int resultLimit = query.getLimit() == null ? 5 : Math.max(1, Math.min(query.getLimit(), 10));
+        boolean useLocation = finalX != null && finalY != null;
+        String normalizedKeyword = normalizeKeyword(buildEffectiveKeyword(query));
+        Set<Long> categoryMatchedShopIds = loadMatchedSubCategoryShopIds(normalizedKeyword, query.getTypeId());
+        Set<Long> excludedShopIds = loadExcludedCategoryShopIds(query.getExcludedCategories(), query.getTypeId());
+        String cityFilter = explicitGeoResolved && useLocation ? null : query.getCity();
+        String locationFilterHint = explicitGeoResolved && useLocation ? null : query.getLocationHint();
+        log.info("recommendation_query keyword={}, typeId={}, budget={}, city={}, locationHint={}, effectiveX={}, effectiveY={}, explicitGeoResolved={}",
+                normalizedKeyword, query.getTypeId(), query.getMaxBudget(), cityFilter, locationFilterHint, finalX, finalY, explicitGeoResolved);
+        List<Shop> candidates = loadCandidates(normalizedKeyword, query.getTypeId(), query.getMaxBudget(), cityFilter, locationFilterHint, finalX, finalY, useLocation, categoryMatchedShopIds);
+        if (candidates == null || candidates.isEmpty()) {
+            log.info("recommendation_candidates total=0 after_recall");
+            return Collections.emptyList();
+        }
+        if (useLocation) {
+            candidates = applyLocationHardFilter(candidates, finalX, finalY);
+            log.info("recommendation_candidates nearby_filtered={} radiusMeters={}", candidates.size(), LOCATION_HARD_FILTER_METERS);
+        }
+        if (candidates.isEmpty()) {
+            log.info("recommendation_candidates total=0 after_nearby_filter");
+            return Collections.emptyList();
+        }
+        log.info("recommendation_candidates total={}", candidates.size());
 
         // 这里只做轻量过滤和粗排，避免所有候选都去查优惠券和博客。
         List<Shop> shortlisted = candidates.stream()
-                .filter(shop -> matchesBudget(shop, maxBudget) && matchesKeyword(shop, normalizedKeyword, categoryMatchedShopIds))
-                .sorted(Comparator.comparingDouble((Shop shop) -> baseCandidateScore(shop, normalizedKeyword, x, y, categoryMatchedShopIds)).reversed())
-                .limit(resolveEnrichmentLimit(resultLimit, couponOnly))
+                .filter(shop -> matchesBudget(shop, query.getMaxBudget())
+                        && matchesKeyword(shop, normalizedKeyword, categoryMatchedShopIds)
+                        && !matchesExcludedCategories(shop, excludedShopIds, query.getExcludedCategories())
+                        && !matchesNegativePreferences(shop, query.getNegativePreferences()))
+                .sorted(Comparator.comparingDouble((Shop shop) -> baseCandidateScore(shop, normalizedKeyword, finalX, finalY, categoryMatchedShopIds)
+                        + preferenceScore(shop, query)).reversed())
+                .limit(resolveEnrichmentLimit(resultLimit, query.getCouponOnly()))
                 .toList();
+        log.info("recommendation_shortlist count={}", shortlisted.size());
 
         List<ShopRecommendationDTO> recommendations = new ArrayList<ShopRecommendationDTO>();
         for (Shop shop : shortlisted) {
             List<Voucher> vouchers = loadVouchers(shop.getId());
-            if (Boolean.TRUE.equals(couponOnly) && vouchers.isEmpty()) {
+            if (Boolean.TRUE.equals(query.getCouponOnly()) && vouchers.isEmpty()) {
+                continue;
+            }
+            if (matchesExcludedCategories(shop, excludedShopIds, query.getExcludedCategories())
+                    || matchesNegativePreferences(shop, query.getNegativePreferences())) {
                 continue;
             }
             List<Blog> blogs = loadShopBlogs(shop.getId());
-            ShopRecommendationDTO dto = buildRecommendation(shop, vouchers, blogs, x, y, normalizedKeyword);
+            ShopRecommendationDTO dto = buildRecommendation(shop, vouchers, blogs, finalX, finalY, normalizedKeyword);
             if (useLocation && dto.getDistanceMeters() != null && dto.getDistanceMeters() > NEARBY_DISTANCE_LIMIT_METERS) {
+                log.debug("recommendation_drop shopId={} reason=distance_over_limit distanceMeters={}",
+                        shop.getId(), dto.getDistanceMeters());
                 continue;
             }
-            dto.setRecommendationScore(dto.getRecommendationScore() + categoryMatchScore(shop, normalizedKeyword, categoryMatchedShopIds));
+            dto.setRecommendationScore(dto.getRecommendationScore()
+                    + categoryMatchScore(shop, normalizedKeyword, categoryMatchedShopIds)
+                    + preferenceScore(shop, query));
             recommendations.add(dto);
         }
 
         recommendations.sort(Comparator.comparing(ShopRecommendationDTO::getRecommendationScore).reversed());
+        log.info("recommendation_final count={}", recommendations.size());
         if (recommendations.size() > resultLimit) {
             return new ArrayList<ShopRecommendationDTO>(recommendations.subList(0, resultLimit));
         }
@@ -128,22 +206,41 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
      * 2. GEO 不够时，再补数据库模糊查询结果。
      * 3. 关键词太窄时，最后再补一层类目级候选，避免完全无召回。
      */
-    private List<Shop> loadCandidates(String keyword, Integer typeId, Long maxBudget, Double x, Double y,
+    private List<Shop> loadCandidates(String keyword, Integer typeId, Long maxBudget, String city, String locationHint, Double x, Double y,
                                       boolean useLocation, Set<Long> categoryMatchedShopIds) {
         Map<Long, Shop> merged = new LinkedHashMap<Long, Shop>();
         if (useLocation && typeId != null) {
-            mergeCandidates(merged, loadNearbyCandidates(typeId, x, y));
+            List<Shop> nearbyCandidates = loadNearbyCandidates(typeId, x, y);
+            log.info("recommendation_recall nearby_geo={}", nearbyCandidates.size());
+            mergeCandidates(merged, nearbyCandidates);
         }
         int targetSize = useLocation ? MAX_CANDIDATES_WITH_LOCATION : MAX_CANDIDATES;
+        if (merged.size() < targetSize && StrUtil.isNotBlank(keyword)) {
+            List<Shop> semanticCandidates = loadSemanticCandidates(keyword, typeId, city, locationHint, x, y, targetSize);
+            log.info("recommendation_recall semantic={}", semanticCandidates.size());
+            mergeCandidates(merged, semanticCandidates);
+        }
+        if (merged.size() < targetSize && useLocation) {
+            List<Shop> coordinateCandidates = loadCoordinateDbCandidates(typeId, maxBudget, x, y, targetSize);
+            log.info("recommendation_recall coordinate_db={}", coordinateCandidates.size());
+            mergeCandidates(merged, coordinateCandidates);
+        }
         if (merged.size() < (useLocation ? MIN_LOCATION_CANDIDATES : targetSize)) {
-            mergeCandidates(merged, loadPrimaryDbCandidates(keyword, typeId, maxBudget, targetSize));
+            List<Shop> primaryDbCandidates = loadPrimaryDbCandidates(keyword, typeId, maxBudget, city, locationHint, targetSize);
+            log.info("recommendation_recall primary_db={}", primaryDbCandidates.size());
+            mergeCandidates(merged, primaryDbCandidates);
         }
         if (merged.size() < targetSize && StrUtil.isNotBlank(keyword)) {
-            mergeCandidates(merged, loadSubCategoryCandidates(categoryMatchedShopIds, typeId, maxBudget));
+            List<Shop> subCategoryCandidates = loadSubCategoryCandidates(categoryMatchedShopIds, typeId, maxBudget, city, locationHint);
+            log.info("recommendation_recall sub_category={}", subCategoryCandidates.size());
+            mergeCandidates(merged, subCategoryCandidates);
         }
         if (merged.size() < targetSize && StrUtil.isNotBlank(keyword)) {
-            mergeCandidates(merged, loadSupplementDbCandidates(typeId, maxBudget, targetSize));
+            List<Shop> supplementDbCandidates = loadSupplementDbCandidates(typeId, maxBudget, city, locationHint, targetSize);
+            log.info("recommendation_recall supplement_db={}", supplementDbCandidates.size());
+            mergeCandidates(merged, supplementDbCandidates);
         }
+        log.info("recommendation_recall merged={}", merged.size());
         return new ArrayList<Shop>(merged.values());
     }
 
@@ -166,46 +263,75 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
         if (typeId == null || x == null || y == null || stringRedisTemplate == null) {
             return Collections.emptyList();
         }
-        GeoResults<RedisGeoCommands.GeoLocation<String>> results = stringRedisTemplate.opsForGeo().search(
-                SHOP_GEO_KEY + typeId,
-                GeoReference.fromCoordinate(x, y),
-                new Distance(GEO_SEARCH_RADIUS_METERS),
-                RedisGeoCommands.GeoSearchCommandArgs.newGeoSearchArgs().includeDistance().limit(MAX_GEO_CANDIDATES)
-        );
-        if (results == null || results.getContent().isEmpty()) {
+        try {
+            GeoResults<RedisGeoCommands.GeoLocation<String>> results = stringRedisTemplate.opsForGeo().search(
+                    SHOP_GEO_KEY + typeId,
+                    GeoReference.fromCoordinate(x, y),
+                    new Distance(GEO_SEARCH_RADIUS_METERS),
+                    RedisGeoCommands.GeoSearchCommandArgs.newGeoSearchArgs().includeDistance().limit(MAX_GEO_CANDIDATES)
+            );
+            if (results == null || results.getContent().isEmpty()) {
+                return Collections.emptyList();
+            }
+            List<GeoResult<RedisGeoCommands.GeoLocation<String>>> geoHits = results.getContent();
+            List<Long> ids = new ArrayList<Long>(geoHits.size());
+            Map<Long, Double> distanceById = new LinkedHashMap<Long, Double>();
+            for (GeoResult<RedisGeoCommands.GeoLocation<String>> hit : geoHits) {
+                Long shopId = Long.parseLong(hit.getContent().getName());
+                ids.add(shopId);
+                distanceById.put(shopId, hit.getDistance() == null ? null : hit.getDistance().getValue());
+            }
+            if (ids.isEmpty()) {
+                return Collections.emptyList();
+            }
+            String orderedIds = StrUtil.join(",", ids);
+            List<Shop> shops = shopService.query()
+                    .in("id", ids)
+                    .last("ORDER BY FIELD(id," + orderedIds + ")")
+                    .list();
+            for (Shop shop : shops) {
+                shop.setDistance(distanceById.get(shop.getId()));
+            }
+            return shops;
+        } catch (Exception e) {
+            // Nearby GEO is an accelerator, not a hard dependency.
+            // When Redis is unavailable, we still let semantic retrieval and DB recall continue.
             return Collections.emptyList();
         }
-        List<GeoResult<RedisGeoCommands.GeoLocation<String>>> geoHits = results.getContent();
-        List<Long> ids = new ArrayList<Long>(geoHits.size());
-        Map<Long, Double> distanceById = new LinkedHashMap<Long, Double>();
-        for (GeoResult<RedisGeoCommands.GeoLocation<String>> hit : geoHits) {
-            Long shopId = Long.parseLong(hit.getContent().getName());
-            ids.add(shopId);
-            distanceById.put(shopId, hit.getDistance() == null ? null : hit.getDistance().getValue());
-        }
-        if (ids.isEmpty()) {
-            return Collections.emptyList();
-        }
-        String orderedIds = StrUtil.join(",", ids);
-        List<Shop> shops = shopService.query()
-                .in("id", ids)
-                .last("ORDER BY FIELD(id," + orderedIds + ")")
-                .list();
-        for (Shop shop : shops) {
-            shop.setDistance(distanceById.get(shop.getId()));
-        }
-        return shops;
     }
 
     /**
      * 关键词主召回负责“精准一点”的命中，适合火锅、咖啡、烧烤这类明确意图。
      */
-    private List<Shop> loadPrimaryDbCandidates(String keyword, Integer typeId, Long maxBudget, int limit) {
-        return shopService.query()
-                .like(StrUtil.isNotBlank(keyword), "name", keyword)
+    private List<Shop> loadPrimaryDbCandidates(String keyword, Integer typeId, Long maxBudget, String city, String locationHint, int limit) {
+        boolean genericRestaurantIntent = isGenericRestaurantKeyword(keyword);
+        var query = shopService.query()
+                .like(StrUtil.isNotBlank(keyword) && !genericRestaurantIntent, "name", keyword)
                 .eq(typeId != null, "type_id", typeId)
-                .le(maxBudget != null, "avg_price", maxBudget)
-                .last("LIMIT " + limit)
+                .le(maxBudget != null, "avg_price", maxBudget);
+        applyLocationFilter(query, city, locationHint);
+        return query.last("LIMIT " + limit).list();
+    }
+
+    /**
+     * 餐厅语义召回：
+     * 先从 MySQL 建好的餐厅向量索引里按语义召回，再通过阿里云 rerank 做精排。
+     */
+    private List<Shop> loadSemanticCandidates(String keyword, Integer typeId, String city, String locationHint, Double x, Double y, int limit) {
+        if (restaurantSemanticRetrievalService == null || !restaurantSemanticRetrievalService.isReady()) {
+            return Collections.emptyList();
+        }
+        List<RestaurantSemanticRetrievalService.SemanticRestaurantHit> hits =
+                restaurantSemanticRetrievalService.search(keyword, typeId, city, locationHint, x, y, Math.max(limit, 5));
+        if (hits.isEmpty()) {
+            return Collections.emptyList();
+        }
+        Set<Long> ids = hits.stream().map(RestaurantSemanticRetrievalService.SemanticRestaurantHit::shopId)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        String orderedIds = StrUtil.join(",", ids);
+        return shopService.query()
+                .in("id", ids)
+                .last("ORDER BY FIELD(id," + orderedIds + ")")
                 .list();
     }
 
@@ -228,28 +354,78 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
      * 细分类候选召回。
      * 用户说“海鲜”“瑜伽”“美甲”时，不再依赖 Java 里写死关键词，而是查 MySQL 字典和关联表。
      */
-    private List<Shop> loadSubCategoryCandidates(Set<Long> shopIds, Integer typeId, Long maxBudget) {
+    private List<Shop> loadSubCategoryCandidates(Set<Long> shopIds, Integer typeId, Long maxBudget, String city, String locationHint) {
         if (shopIds == null || shopIds.isEmpty()) {
             return Collections.emptyList();
         }
         String orderedIds = StrUtil.join(",", shopIds);
-        return shopService.query()
+        var query = shopService.query()
                 .in("id", shopIds)
                 .eq(typeId != null, "type_id", typeId)
-                .le(maxBudget != null, "avg_price", maxBudget)
-                .last("ORDER BY FIELD(id," + orderedIds + ")")
-                .list();
+                .le(maxBudget != null, "avg_price", maxBudget);
+        applyLocationFilter(query, city, locationHint);
+        return query.last("ORDER BY FIELD(id," + orderedIds + ")").list();
     }
 
     /**
      * 补召回不带关键词过滤，目的是在数据稀疏时兜底，不让“附近推荐”直接空掉。
      */
-    private List<Shop> loadSupplementDbCandidates(Integer typeId, Long maxBudget, int limit) {
-        return shopService.query()
+    private List<Shop> loadSupplementDbCandidates(Integer typeId, Long maxBudget, String city, String locationHint, int limit) {
+        var query = shopService.query()
+                .eq(typeId != null, "type_id", typeId)
+                .le(maxBudget != null, "avg_price", maxBudget);
+        applyLocationFilter(query, city, locationHint);
+        return query.last("LIMIT " + limit).list();
+    }
+
+    /**
+     * 当显式地点已经被解析成坐标时，直接走数据库坐标筛选做兜底。
+     * 这样即便语义召回没有把“体育西附近”的店放进前几名，也不会完全空掉。
+     */
+    private List<Shop> loadCoordinateDbCandidates(Integer typeId, Long maxBudget, Double x, Double y, int limit) {
+        if (x == null || y == null) {
+            return Collections.emptyList();
+        }
+        List<Shop> shops = shopService.query()
                 .eq(typeId != null, "type_id", typeId)
                 .le(maxBudget != null, "avg_price", maxBudget)
-                .last("LIMIT " + limit)
                 .list();
+        return shops.stream()
+                .peek(shop -> {
+                    if (shop.getX() != null && shop.getY() != null) {
+                        shop.setDistance(distanceMeters(x, y, shop.getX(), shop.getY()));
+                    }
+                })
+                .filter(shop -> shop.getDistance() != null && shop.getDistance() <= NEARBY_DISTANCE_LIMIT_METERS)
+                .sorted(Comparator.comparing(Shop::getDistance))
+                .limit(limit)
+                .toList();
+    }
+
+    /**
+     * 用户明确说“附近”且我们已经拿到坐标时，先做一层硬距离过滤。
+     * 这样可以避免全国候选因为评分高而挤进 shortlist，最后又在结果阶段被整体清空。
+     */
+    private List<Shop> applyLocationHardFilter(List<Shop> candidates, Double x, Double y) {
+        if (candidates == null || candidates.isEmpty() || x == null || y == null) {
+            return candidates == null ? Collections.emptyList() : candidates;
+        }
+        List<Shop> filtered = new ArrayList<Shop>(candidates.size());
+        for (Shop shop : candidates) {
+            if (shop == null) {
+                continue;
+            }
+            Double distance = shop.getDistance();
+            if (distance == null && shop.getX() != null && shop.getY() != null) {
+                distance = distanceMeters(x, y, shop.getX(), shop.getY());
+                shop.setDistance(distance);
+            }
+            if (distance != null && distance <= LOCATION_HARD_FILTER_METERS) {
+                filtered.add(shop);
+            }
+        }
+        filtered.sort(Comparator.comparing(Shop::getDistance, Comparator.nullsLast(Double::compareTo)));
+        return filtered;
     }
 
     private List<Voucher> loadVouchers(Long shopId) {
@@ -394,6 +570,9 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
     }
 
     private boolean matchesKeyword(Shop shop, String keyword, Set<Long> categoryMatchedShopIds) {
+        if (isGenericRestaurantKeyword(keyword)) {
+            return true;
+        }
         return StrUtil.isBlank(keyword)
                 || textualMatchScore(shop, keyword) > 0D
                 || categoryMatchScore(shop, keyword, categoryMatchedShopIds) > 0D;
@@ -405,6 +584,9 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
      */
     private double textualMatchScore(Shop shop, String keyword) {
         if (shop == null || StrUtil.isBlank(keyword)) {
+            return 0D;
+        }
+        if (isGenericRestaurantKeyword(keyword)) {
             return 0D;
         }
         List<String> variants = buildKeywordVariants(keyword);
@@ -500,6 +682,96 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
         return shopSubCategoryService.extractMatchedTerms(keyword);
     }
 
+    private String buildEffectiveKeyword(ShopRecommendationQuery query) {
+        List<String> parts = new ArrayList<String>();
+        if (StrUtil.isNotBlank(query.getKeyword())) {
+            parts.add(query.getKeyword());
+        }
+        if (StrUtil.isNotBlank(query.getSubcategory())
+                && parts.stream().noneMatch(part -> part.contains(query.getSubcategory()))) {
+            parts.add(query.getSubcategory());
+        }
+        if (StrUtil.isNotBlank(query.getQualityPreference())) {
+            parts.add(query.getQualityPreference());
+        }
+        return String.join(" ", parts).trim();
+    }
+
+    private Set<Long> loadExcludedCategoryShopIds(List<String> excludedCategories, Integer typeId) {
+        if (shopSubCategoryService == null || excludedCategories == null || excludedCategories.isEmpty()) {
+            return Collections.emptySet();
+        }
+        Set<Long> shopIds = new LinkedHashSet<Long>();
+        for (String excludedCategory : excludedCategories) {
+            if (StrUtil.isBlank(excludedCategory)) {
+                continue;
+            }
+            shopIds.addAll(shopSubCategoryService.findMatchedShopIds(excludedCategory, typeId, MAX_CANDIDATES_WITH_LOCATION));
+        }
+        return shopIds;
+    }
+
+    private boolean matchesExcludedCategories(Shop shop, Set<Long> excludedShopIds, List<String> excludedCategories) {
+        if (shop == null) {
+            return false;
+        }
+        if (excludedShopIds != null && excludedShopIds.contains(shop.getId())) {
+            return true;
+        }
+        if (shopSubCategoryService == null || excludedCategories == null || excludedCategories.isEmpty()) {
+            return false;
+        }
+        for (String excludedCategory : excludedCategories) {
+            if (shopSubCategoryService.categoryMatchScore(shop, excludedCategory) > 0D) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean matchesNegativePreferences(Shop shop, List<String> negativePreferences) {
+        if (shop == null || negativePreferences == null || negativePreferences.isEmpty()) {
+            return false;
+        }
+        String text = normalizeKeyword(StrUtil.nullToEmpty(shop.getName()) + " "
+                + StrUtil.nullToEmpty(shop.getArea()) + " "
+                + StrUtil.nullToEmpty(shop.getAddress()));
+        for (String negativePreference : negativePreferences) {
+            if (StrUtil.isBlank(negativePreference)) {
+                continue;
+            }
+            if ("太辣".equals(negativePreference) && (text.contains("辣") || text.contains("麻辣"))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /* legacy preference helpers kept for reference during semantic refactor
+    private double preferenceScore(Shop shop, ShopRecommendationQuery query) {
+        if (shop == null || query == null) {
+            return 0D;
+        }
+        double score = 0D;
+        if (StrUtil.isNotBlank(query.getSubcategory())) {
+            score += shopSubCategoryService == null ? 0D : shopSubCategoryService.categoryMatchScore(shop, query.getSubcategory());
+        }
+        if (StrUtil.isNotBlank(query.getQualityPreference())) {
+            String preference = query.getQualityPreference();
+            if (preference.contains("性价比高") && shop.getAvgPrice() != null && shop.getAvgPrice() <= 80L) {
+                score += 0.8D;
+            }
+            if (preference.contains("出餐快") && shopSubCategoryService != null
+                    && shopSubCategoryService.categoryMatchScore(shop, "快餐") > 0D) {
+                score += 1.2D;
+            }
+            if (preference.contains("清淡") && containsText(shop.getName(), "素")) {
+                score += 0.6D;
+            }
+        }
+        return score;
+    }
+
     private String normalizeKeyword(String keyword) {
         if (StrUtil.isBlank(keyword)) {
             return "";
@@ -510,6 +782,84 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
                 .replace("店铺", "")
                 .replace("商家", "")
                 .trim();
+    }
+
+    */
+
+    private double preferenceScore(Shop shop, ShopRecommendationQuery query) {
+        if (shop == null || query == null) {
+            return 0D;
+        }
+        double score = 0D;
+        if (StrUtil.isNotBlank(query.getSubcategory()) && shopSubCategoryService != null) {
+            score += shopSubCategoryService.categoryMatchScore(shop, query.getSubcategory());
+        }
+        if (StrUtil.isNotBlank(query.getQualityPreference())) {
+            String preference = query.getQualityPreference();
+            if (preference.contains("性价比高") && shop.getAvgPrice() != null && shop.getAvgPrice() <= 80L) {
+                score += 0.8D;
+            }
+            if (preference.contains("出餐快") && shopSubCategoryService != null
+                    && shopSubCategoryService.categoryMatchScore(shop, "快餐") > 0D) {
+                score += 1.2D;
+            }
+            if (preference.contains("清淡")
+                    && (containsText(shop.getName(), "素") || containsText(shop.getName(), "清"))) {
+                score += 0.6D;
+            }
+            if (preference.contains("适合约会") && shop.getScore() != null && shop.getScore() >= 45) {
+                score += 0.5D;
+            }
+            if (preference.contains("高评分") && shop.getScore() != null && shop.getScore() >= 46) {
+                score += 0.6D;
+            }
+        }
+        return score;
+    }
+
+    private String normalizeKeyword(String keyword) {
+        if (StrUtil.isBlank(keyword)) {
+            return "";
+        }
+        return keyword.replace("附近", "")
+                .replace("周边", "")
+                .replace("推荐", "")
+                .replace("店铺", "")
+                .replace("商家", "")
+                .replace("，", " ")
+                .replace("。", " ")
+                .replace("！", " ")
+                .replace("？", " ")
+                .replace(",", " ")
+                .replace(".", " ")
+                .replace("!", " ")
+                .replace("?", " ")
+                .trim();
+    }
+
+    private boolean isGenericRestaurantKeyword(String keyword) {
+        if (StrUtil.isBlank(keyword)) {
+            return false;
+        }
+        String normalized = keyword.toLowerCase(Locale.ROOT).trim();
+        return normalized.contains("餐厅")
+                || normalized.contains("美食")
+                || normalized.contains("吃饭")
+                || normalized.contains("饭店");
+    }
+
+    private void applyLocationFilter(com.baomidou.mybatisplus.extension.conditions.query.QueryChainWrapper<Shop> query,
+                                     String city,
+                                     String locationHint) {
+        if (StrUtil.isBlank(city) && StrUtil.isBlank(locationHint)) {
+            return;
+        }
+        if (StrUtil.isNotBlank(city)) {
+            query.and(wrapper -> wrapper.like("area", city).or().like("address", city));
+        }
+        if (StrUtil.isNotBlank(locationHint)) {
+            query.and(wrapper -> wrapper.like("area", locationHint).or().like("address", locationHint));
+        }
     }
 
     private Double distanceMeters(Double userX, Double userY, Double shopX, Double shopY) {

@@ -6,7 +6,7 @@ import lombok.Data;
 public class AiEmbeddingProperties {
 
     /**
-     * auto | openai | local-hash
+     * auto | openai | huggingface | local-hash
      */
     private String provider = "auto";
 

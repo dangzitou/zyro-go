@@ -31,7 +31,7 @@ spring:
           time-between-eviction-runs: 10s
   ai:
     openai:
-      base-url: ${AI_BASE_URL:https://api.henng.cn}
+      base-url: ${AI_BASE_URL:https://api2.henng.cn}
       api-key: ${AI_API_KEY:sk-31bbb402929a905f8dbf9ae662cb731c62cc8148e516fd58ad3c8ea02c06a31e}
       chat:
         options:
@@ -39,7 +39,7 @@ spring:
           temperature: ${AI_TEMPERATURE:0.2}
       embedding:
         options:
-          model: ${AI_EMBEDDING_MODEL:text-embedding-3-small}
+          model: ${AI_EMBEDDING_MODEL:text-embedding-v3}
   jackson:
     default-property-inclusion: non_null
 
@@ -66,6 +66,8 @@ management:
         enabled: true
 
 hmdp:
+  voucher-order:
+    enabled: ${HMDP_VOUCHER_ORDER_ENABLED:true}
   redisson:
     enabled: ${REDISSON_ENABLED:true}
   ai:
@@ -86,14 +88,34 @@ hmdp:
       max-documents: ${AI_BLOG_RAG_MAX_DOCUMENTS:300}
       rerank-candidate-limit: ${AI_BLOG_RAG_RERANK_CANDIDATE_LIMIT:12}
     embedding:
-      provider: ${AI_EMBEDDING_PROVIDER:auto}
-      base-url: ${AI_EMBEDDING_BASE_URL:${AI_BASE_URL:https://api.henng.cn}}
-      api-key: ${AI_EMBEDDING_API_KEY:${AI_API_KEY:}}
-      model: ${AI_EMBEDDING_MODEL:text-embedding-3-small}
+      provider: ${AI_EMBEDDING_PROVIDER:dashscope}
+      base-url: ${AI_EMBEDDING_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings}
+      api-key: ${AI_EMBEDDING_API_KEY:sk-bc3d8649a600499eba38b96f21b2fb52}
+      model: ${AI_EMBEDDING_MODEL:text-embedding-v3}
       local-dimensions: ${AI_LOCAL_EMBEDDING_DIMENSIONS:256}
+    rerank:
+      enabled: ${AI_RERANK_ENABLED:true}
+      base-url: ${AI_RERANK_BASE_URL:https://dashscope.aliyuncs.com/compatible-api/v1/reranks}
+      api-key: ${AI_RERANK_API_KEY:sk-bc3d8649a600499eba38b96f21b2fb52}
+      model: ${AI_RERANK_MODEL:qwen3-rerank}
+      top-n: ${AI_RERANK_TOP_N:5}
+    restaurant-retrieval:
+      enabled: ${AI_RESTAURANT_RETRIEVAL_ENABLED:true}
+      rebuild-on-startup: ${AI_RESTAURANT_RETRIEVAL_REBUILD_ON_STARTUP:true}
+      store-file: ${AI_RESTAURANT_RETRIEVAL_STORE_FILE:data/ai/shop-vector-store.json}
+      similarity-threshold: ${AI_RESTAURANT_RETRIEVAL_SIMILARITY_THRESHOLD:0.30}
+      candidate-limit: ${AI_RESTAURANT_RETRIEVAL_CANDIDATE_LIMIT:12}
+      nearby-distance-limit-meters: ${AI_RESTAURANT_RETRIEVAL_NEARBY_DISTANCE_LIMIT_METERS:50000}
+    baidu-map:
+      enabled: ${AI_BAIDU_MAP_ENABLED:true}
+      ak: ${AI_BAIDU_MAP_AK:nw1jp605gYga90yEGnmexgjwkWfZBlF2}
+      geocoding-url: ${AI_BAIDU_MAP_GEOCODING_URL:https://api.map.baidu.com/geocoding/v3/}
+      suggestion-url: ${AI_BAIDU_MAP_SUGGESTION_URL:https://api.map.baidu.com/place/v2/suggestion}
+      place-search-url: ${AI_BAIDU_MAP_PLACE_SEARCH_URL:https://api.map.baidu.com/place/v2/search}
     planner-enabled: ${AI_PLANNER_ENABLED:true}
     planner-validation-enabled: ${AI_PLANNER_VALIDATION_ENABLED:true}
     recursive-tool-loop-enabled: ${AI_RECURSIVE_TOOL_LOOP_ENABLED:true}
+    debug-user-id: ${AI_DEBUG_USER_ID:1}
     rate-limit:
       enabled: ${AI_RATE_LIMIT_ENABLED:true}
       window-seconds: ${AI_RATE_LIMIT_WINDOW_SECONDS:60}

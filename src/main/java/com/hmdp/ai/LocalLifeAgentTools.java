@@ -4,6 +4,7 @@ import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.hmdp.dto.Result;
+import com.hmdp.dto.ShopRecommendationQuery;
 import com.hmdp.dto.ShopRecommendationDTO;
 import com.hmdp.entity.Blog;
 import com.hmdp.entity.Shop;
@@ -133,16 +134,46 @@ public class LocalLifeAgentTools {
      */
     @Tool(name = "recommend_shops", description = "Recommend shops with business-side ranking based on keyword, budget, location and coupon preference.")
     public List<ShopRecommendationDTO> recommendShops(
+            String keyword,
+            Integer typeId,
+            Long maxBudget,
+            Double x,
+            Double y,
+            Boolean couponOnly,
+            Integer limit) {
+        return recommendShops(keyword, typeId, maxBudget, null, null, x, y, couponOnly, limit);
+    }
+
+    @Tool(name = "recommend_shops_v2", description = "Recommend shops with business-side ranking based on keyword, budget, explicit city/location and coupon preference.")
+    public List<ShopRecommendationDTO> recommendShops(
             @ToolParam(required = false, description = "Keyword such as 火锅, 咖啡, 烧烤") String keyword,
             @ToolParam(required = false, description = "Shop type id if available") Integer typeId,
             @ToolParam(required = false, description = "Maximum budget in RMB") Long maxBudget,
+            @ToolParam(required = false, description = "Explicit city mentioned by user") String city,
+            @ToolParam(required = false, description = "Explicit商圈/地标/区域 hint mentioned by user") String locationHint,
             @ToolParam(required = false, description = "Longitude of the user") Double x,
             @ToolParam(required = false, description = "Latitude of the user") Double y,
             @ToolParam(required = false, description = "Whether only shops with coupons are acceptable") Boolean couponOnly,
             @ToolParam(required = false, description = "Number of recommendation items to return, default 5") Integer limit) {
-        List<ShopRecommendationDTO> result = shopRecommendationService.recommendShops(keyword, typeId, maxBudget, x, y, couponOnly, limit);
+        List<ShopRecommendationDTO> result = shopRecommendationService.recommendShops(keyword, typeId, maxBudget, city, locationHint, x, y, couponOnly, limit);
         traceContext.record("recommend_shops(keyword=" + safe(keyword) + ", typeId=" + safe(typeId) + ", budget=" + safe(maxBudget)
+                + ", city=" + safe(city) + ", locationHint=" + safe(locationHint)
                 + ", couponOnly=" + safe(couponOnly) + ", limit=" + safe(limit) + ") -> " + result.size() + " recommendation(s)");
+        return result;
+    }
+
+    public List<ShopRecommendationDTO> recommendShops(ShopRecommendationQuery query) {
+        List<ShopRecommendationDTO> result = shopRecommendationService.recommendShops(query);
+        traceContext.record("recommend_shops(keyword=" + safe(query.getKeyword())
+                + ", typeId=" + safe(query.getTypeId())
+                + ", budget=" + safe(query.getMaxBudget())
+                + ", city=" + safe(query.getCity())
+                + ", locationHint=" + safe(query.getLocationHint())
+                + ", subcategory=" + safe(query.getSubcategory())
+                + ", excludedCategories=" + safe(query.getExcludedCategories())
+                + ", negativePreferences=" + safe(query.getNegativePreferences())
+                + ", couponOnly=" + safe(query.getCouponOnly())
+                + ", limit=" + safe(query.getLimit()) + ") -> " + result.size() + " recommendation(s)");
         return result;
     }
 

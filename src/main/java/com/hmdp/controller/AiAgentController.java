@@ -1,12 +1,15 @@
 package com.hmdp.controller;
 
 import com.hmdp.ai.rag.LocalLifeRagService;
+import com.hmdp.ai.rag.BaiduMapGeoService;
+import com.hmdp.ai.rag.RestaurantSemanticRetrievalService;
 import com.hmdp.dto.AiChatRequest;
 import com.hmdp.dto.AiChatResponse;
 import com.hmdp.dto.Result;
 import com.hmdp.service.IAiAgentService;
 import jakarta.annotation.Resource;
 import jakarta.validation.Valid;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -25,6 +28,12 @@ public class AiAgentController {
 
     @Resource
     private LocalLifeRagService localLifeRagService;
+
+    @Resource
+    private RestaurantSemanticRetrievalService restaurantSemanticRetrievalService;
+
+    @Resource
+    private BaiduMapGeoService baiduMapGeoService;
 
     /**
      * 同步 Agent 对话接口。
@@ -54,7 +63,8 @@ public class AiAgentController {
     @PostMapping("/knowledge/rebuild")
     public Result rebuildKnowledgeIndex() {
         localLifeRagService.rebuildIndex();
-        return Result.ok(localLifeRagService.isReady());
+        restaurantSemanticRetrievalService.rebuildIndex();
+        return Result.ok(localLifeRagService.isReady() && restaurantSemanticRetrievalService.isReady());
     }
 
     /**
@@ -65,5 +75,14 @@ public class AiAgentController {
     public Result clearSession(@RequestParam(value = "conversationId", required = false) String conversationId) {
         aiAgentService.clearSession(conversationId);
         return Result.ok();
+    }
+
+    /**
+     * 本地联调用：查看显式地点最终被百度地图解析成什么坐标。
+     */
+    @GetMapping("/debug/geocode")
+    public Result debugGeocode(@RequestParam(value = "city", required = false) String city,
+                               @RequestParam("locationHint") String locationHint) {
+        return Result.ok(baiduMapGeoService.geocode(city, locationHint));
     }
 }

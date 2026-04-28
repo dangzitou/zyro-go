@@ -27,6 +27,12 @@ public class AiProperties {
     @NestedConfigurationProperty
     private AiEmbeddingProperties embedding = new AiEmbeddingProperties();
     @NestedConfigurationProperty
+    private AiRerankProperties rerank = new AiRerankProperties();
+    @NestedConfigurationProperty
+    private AiRestaurantRetrievalProperties restaurantRetrieval = new AiRestaurantRetrievalProperties();
+    @NestedConfigurationProperty
+    private BaiduMapProperties baiduMap = new BaiduMapProperties();
+    @NestedConfigurationProperty
     private AiRateLimitProperties rateLimit = new AiRateLimitProperties();
     @NestedConfigurationProperty
     private AiAuditProperties audit = new AiAuditProperties();
