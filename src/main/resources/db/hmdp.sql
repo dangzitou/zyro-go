@@ -1236,6 +1236,144 @@ CREATE TABLE `tb_user_info`  (
 -- ----------------------------
 
 -- ----------------------------
+-- Table structure for tb_shop_sub_category
+-- ----------------------------
+DROP TABLE IF EXISTS `tb_shop_sub_category`;
+CREATE TABLE `tb_shop_sub_category`  (
+  `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `parent_type_id` bigint(20) UNSIGNED NOT NULL COMMENT '关联的大类id，对应tb_shop_type.id',
+  `code` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '细分类编码',
+  `name` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '细分类名称',
+  `aliases` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL DEFAULT NULL COMMENT '别名，逗号分隔',
+  `sort` int(10) UNSIGNED NOT NULL DEFAULT 0 COMMENT '排序',
+  `status` tinyint(1) UNSIGNED NOT NULL DEFAULT 1 COMMENT '状态：1启用 0停用',
+  `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_parent_code`(`parent_type_id`, `code`) USING BTREE,
+  INDEX `idx_parent_sort`(`parent_type_id`, `sort`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '店铺细分类定义表' ROW_FORMAT = Compact;
+
+-- ----------------------------
+-- Records of tb_shop_sub_category
+-- ----------------------------
+INSERT INTO `tb_shop_sub_category` VALUES (1, 1, 'hotpot', '火锅', '火锅,涮锅,羊蝎子,牛肉火锅,铜锅', 10, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (2, 1, 'seafood', '海鲜', '海鲜,海产,渔鲜,酒家,渔村', 20, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (3, 1, 'bbq', '烧烤烤肉', '烧烤,烤肉,烤串,炭火烤肉,烤鱼', 30, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (4, 1, 'coffee', '咖啡馆', '咖啡,coffee,cafe,咖啡馆', 40, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (5, 1, 'dessert', '甜品饮品', '甜品,奶茶,饮品,糖水,蛋糕,花生汤', 50, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (6, 1, 'western', '西餐', '西餐,牛排,意面,brunch,披萨', 60, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (7, 1, 'japanese', '日料寿司', '日料,寿司,刺身,居酒屋,浅草', 70, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (8, 1, 'fastfood', '小吃快餐', '快餐,汉堡,炸鸡,沙茶面,拉面,面馆,小吃,麦当劳,肯德基', 80, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (9, 1, 'cantonese', '粤菜茶餐厅', '粤菜,茶餐厅,烧味,点心,港式', 90, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (10, 1, 'sichuan_hunan', '川湘菜', '川菜,湘菜,麻辣香锅,辣子鸡,冒菜', 100, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (11, 1, 'home_cooking', '家常菜', '家常菜,餐厅,饭店,菜馆,私房菜', 110, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (12, 2, 'party_ktv', '量贩KTV', '量贩KTV,平价KTV,欢唱,K歌', 10, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (13, 2, 'business_ktv', '商务KTV', '商务KTV,会所KTV', 20, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (14, 2, 'theme_ktv', '主题KTV', '主题KTV,迷你K歌', 30, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (15, 3, 'haircut', '剪发', '剪发,理发,快剪,发型设计', 10, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (16, 3, 'hair_color_perm', '染烫护理', '染发,烫发,护理,养发', 20, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (17, 4, 'gym', '健身房', '健身房,器械健身,私教', 10, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (18, 4, 'yoga', '瑜伽普拉提', '瑜伽,普拉提', 20, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (19, 4, 'swimming', '游泳馆', '游泳,游泳馆', 30, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (20, 5, 'foot_massage', '足疗', '足疗,足道,修脚', 10, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (21, 5, 'body_massage', '中式按摩', '按摩,推拿,理疗', 20, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (22, 6, 'beauty_face', '面部护理', '面部护理,补水,清洁,皮肤管理', 10, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (23, 6, 'beauty_spa', '身体SPA', 'SPA,芳疗,身体护理', 20, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (24, 7, 'kids_playground', '儿童乐园', '儿童乐园,淘气堡,亲子乐园', 10, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (25, 7, 'parent_child_diy', '亲子DIY', '亲子DIY,手工,绘本', 20, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (26, 8, 'cocktail_bar', '鸡尾酒吧', '鸡尾酒吧,cocktail bar,清吧', 10, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (27, 8, 'livehouse', 'LiveHouse', 'livehouse,驻唱,音乐现场', 20, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (28, 8, 'craft_beer', '精酿酒馆', '精酿,啤酒馆,酒馆', 30, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (29, 9, 'party_villa', '聚会轰趴', '聚会轰趴,生日轰趴,别墅轰趴', 10, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (30, 9, 'team_building', '团建轰趴', '团建,公司聚会,团建轰趴', 20, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (31, 10, 'manicure', '美甲', '美甲,手部护理', 10, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+INSERT INTO `tb_shop_sub_category` VALUES (32, 10, 'eyelash', '美睫', '美睫,嫁接睫毛', 20, 1, '2026-04-28 09:00:00', '2026-04-28 09:00:00');
+
+-- ----------------------------
+-- Table structure for tb_shop_sub_category_relation
+-- ----------------------------
+DROP TABLE IF EXISTS `tb_shop_sub_category_relation`;
+CREATE TABLE `tb_shop_sub_category_relation`  (
+  `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `shop_id` bigint(20) UNSIGNED NOT NULL COMMENT '店铺id',
+  `sub_category_id` bigint(20) UNSIGNED NOT NULL COMMENT '细分类id',
+  `is_primary` tinyint(1) UNSIGNED NOT NULL DEFAULT 1 COMMENT '是否主细分类：1是 0否',
+  `source` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'manual' COMMENT '来源：manual/import/rule/ai',
+  `confidence` decimal(5,2) NOT NULL DEFAULT 1.00 COMMENT '置信度',
+  `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`id`) USING BTREE,
+  UNIQUE INDEX `uk_shop_sub_category`(`shop_id`, `sub_category_id`) USING BTREE,
+  INDEX `idx_sub_category`(`sub_category_id`) USING BTREE,
+  INDEX `idx_shop_primary`(`shop_id`, `is_primary`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '店铺与细分类关联表' ROW_FORMAT = Compact;
+
+-- ----------------------------
+-- Records of tb_shop_sub_category_relation
+-- ----------------------------
+INSERT IGNORE INTO `tb_shop_sub_category_relation` (`shop_id`, `sub_category_id`, `is_primary`, `source`, `confidence`)
+SELECT s.id, c.id, 1, 'rule', 0.92 FROM `tb_shop` s JOIN `tb_shop_sub_category` c ON c.code = 'hotpot'
+WHERE s.type_id = 1 AND (s.name LIKE '%火锅%' OR s.name LIKE '%涮锅%' OR s.name LIKE '%羊蝎子%' OR s.name LIKE '%铜锅%' OR s.name LIKE '%海底捞%' OR s.name LIKE '%锅%');
+INSERT IGNORE INTO `tb_shop_sub_category_relation` (`shop_id`, `sub_category_id`, `is_primary`, `source`, `confidence`)
+SELECT s.id, c.id, 1, 'rule', 0.92 FROM `tb_shop` s JOIN `tb_shop_sub_category` c ON c.code = 'seafood'
+WHERE s.type_id = 1 AND (s.name LIKE '%海鲜%' OR s.name LIKE '%海产%' OR s.name LIKE '%渔%' OR s.name LIKE '%鱼%' OR s.name LIKE '%鲜%' OR s.name LIKE '%酒家%' OR s.name LIKE '%渔村%' OR s.address LIKE '%海后%');
+INSERT IGNORE INTO `tb_shop_sub_category_relation` (`shop_id`, `sub_category_id`, `is_primary`, `source`, `confidence`)
+SELECT s.id, c.id, 1, 'rule', 0.90 FROM `tb_shop` s JOIN `tb_shop_sub_category` c ON c.code = 'bbq'
+WHERE s.type_id = 1 AND (s.name LIKE '%烧烤%' OR s.name LIKE '%烤肉%' OR s.name LIKE '%烤串%' OR s.name LIKE '%炭火%' OR s.name LIKE '%烤%');
+INSERT IGNORE INTO `tb_shop_sub_category_relation` (`shop_id`, `sub_category_id`, `is_primary`, `source`, `confidence`)
+SELECT s.id, c.id, 1, 'rule', 0.90 FROM `tb_shop` s JOIN `tb_shop_sub_category` c ON c.code = 'coffee'
+WHERE s.type_id = 1 AND (LOWER(s.name) LIKE '%咖啡%' OR LOWER(s.name) LIKE '%coffee%' OR LOWER(s.name) LIKE '%cafe%' OR LOWER(s.name) LIKE '%citiark%' OR s.name LIKE '%星巴克%');
+INSERT IGNORE INTO `tb_shop_sub_category_relation` (`shop_id`, `sub_category_id`, `is_primary`, `source`, `confidence`)
+SELECT s.id, c.id, 1, 'rule', 0.88 FROM `tb_shop` s JOIN `tb_shop_sub_category` c ON c.code = 'dessert'
+WHERE s.type_id = 1 AND (s.name LIKE '%甜品%' OR s.name LIKE '%奶茶%' OR s.name LIKE '%饮品%' OR s.name LIKE '%糖水%' OR s.name LIKE '%花生汤%' OR s.name LIKE '%蛋糕%' OR s.name LIKE '%茶饮%');
+INSERT IGNORE INTO `tb_shop_sub_category_relation` (`shop_id`, `sub_category_id`, `is_primary`, `source`, `confidence`)
+SELECT s.id, c.id, 1, 'rule', 0.86 FROM `tb_shop` s JOIN `tb_shop_sub_category` c ON c.code = 'western'
+WHERE s.type_id = 1 AND (LOWER(s.name) LIKE '%西餐%' OR LOWER(s.name) LIKE '%牛排%' OR LOWER(s.name) LIKE '%意面%' OR LOWER(s.name) LIKE '%brunch%' OR LOWER(s.name) LIKE '%pizza%' OR LOWER(s.name) LIKE '%pasta%' OR LOWER(s.name) LIKE '%mamala%');
+INSERT IGNORE INTO `tb_shop_sub_category_relation` (`shop_id`, `sub_category_id`, `is_primary`, `source`, `confidence`)
+SELECT s.id, c.id, 1, 'rule', 0.90 FROM `tb_shop` s JOIN `tb_shop_sub_category` c ON c.code = 'japanese'
+WHERE s.type_id = 1 AND (s.name LIKE '%日料%' OR s.name LIKE '%寿司%' OR s.name LIKE '%刺身%' OR s.name LIKE '%居酒屋%' OR s.name LIKE '%浅草%');
+INSERT IGNORE INTO `tb_shop_sub_category_relation` (`shop_id`, `sub_category_id`, `is_primary`, `source`, `confidence`)
+SELECT s.id, c.id, 1, 'rule', 0.84 FROM `tb_shop` s JOIN `tb_shop_sub_category` c ON c.code = 'fastfood'
+WHERE s.type_id = 1 AND (s.name LIKE '%快餐%' OR s.name LIKE '%汉堡%' OR s.name LIKE '%炸鸡%' OR s.name LIKE '%沙茶面%' OR s.name LIKE '%拉面%' OR s.name LIKE '%面馆%' OR s.name LIKE '%小吃%' OR s.name LIKE '%麦当劳%' OR s.name LIKE '%肯德基%' OR s.name LIKE '%黄则和%' OR s.name LIKE '%Chai%' OR s.name LIKE '%茶餐厅%');
+INSERT IGNORE INTO `tb_shop_sub_category_relation` (`shop_id`, `sub_category_id`, `is_primary`, `source`, `confidence`)
+SELECT s.id, c.id, 1, 'rule', 0.86 FROM `tb_shop` s JOIN `tb_shop_sub_category` c ON c.code = 'cantonese'
+WHERE s.type_id = 1 AND (s.name LIKE '%粤菜%' OR s.name LIKE '%茶餐厅%' OR s.name LIKE '%烧味%' OR s.name LIKE '%点心%' OR s.name LIKE '%港式%' OR s.name LIKE '%103茶餐厅%');
+INSERT IGNORE INTO `tb_shop_sub_category_relation` (`shop_id`, `sub_category_id`, `is_primary`, `source`, `confidence`)
+SELECT s.id, c.id, 1, 'rule', 0.86 FROM `tb_shop` s JOIN `tb_shop_sub_category` c ON c.code = 'sichuan_hunan'
+WHERE s.type_id = 1 AND (s.name LIKE '%川菜%' OR s.name LIKE '%湘菜%' OR s.name LIKE '%麻辣%' OR s.name LIKE '%辣子鸡%' OR s.name LIKE '%冒菜%' OR s.name LIKE '%水煮%');
+INSERT IGNORE INTO `tb_shop_sub_category_relation` (`shop_id`, `sub_category_id`, `is_primary`, `source`, `confidence`)
+SELECT s.id, c.id, 1, 'rule', 0.80 FROM `tb_shop` s JOIN `tb_shop_sub_category` c ON c.code = 'home_cooking'
+WHERE s.type_id = 1 AND NOT EXISTS (SELECT 1 FROM `tb_shop_sub_category_relation` r WHERE r.shop_id = s.id);
+INSERT IGNORE INTO `tb_shop_sub_category_relation` (`shop_id`, `sub_category_id`, `is_primary`, `source`, `confidence`)
+SELECT s.id, c.id, 1, 'rule', 0.90 FROM `tb_shop` s JOIN `tb_shop_sub_category` c ON c.parent_type_id = s.type_id
+WHERE s.type_id = 2 AND ((c.code = 'party_ktv' AND (s.name LIKE '%量贩%' OR s.name LIKE '%欢唱%' OR s.name LIKE '%讴K%' OR s.name LIKE '%星聚会%' OR s.name LIKE '%开乐迪%')) OR (c.code = 'business_ktv' AND (s.name LIKE '%商务%' OR s.name LIKE '%会所%')) OR (c.code = 'theme_ktv' AND (s.name LIKE '%主题%' OR s.name LIKE '%迷你%' OR s.name LIKE '%INLOVE%' OR s.name LIKE '%魅%')));
+INSERT IGNORE INTO `tb_shop_sub_category_relation` (`shop_id`, `sub_category_id`, `is_primary`, `source`, `confidence`)
+SELECT s.id, c.id, 1, 'rule', 0.88 FROM `tb_shop` s JOIN `tb_shop_sub_category` c ON c.parent_type_id = s.type_id
+WHERE s.type_id = 3 AND ((c.code = 'haircut' AND (s.name LIKE '%剪发%' OR s.name LIKE '%理发%' OR s.name LIKE '%快剪%' OR s.name LIKE '%发型%' OR s.name LIKE '%造型%')) OR (c.code = 'hair_color_perm' AND (s.name LIKE '%染%' OR s.name LIKE '%烫%' OR s.name LIKE '%护理%' OR s.name LIKE '%养发%')));
+INSERT IGNORE INTO `tb_shop_sub_category_relation` (`shop_id`, `sub_category_id`, `is_primary`, `source`, `confidence`)
+SELECT s.id, c.id, 1, 'rule', 0.88 FROM `tb_shop` s JOIN `tb_shop_sub_category` c ON c.parent_type_id = s.type_id
+WHERE s.type_id = 4 AND ((c.code = 'gym' AND (s.name LIKE '%健身%' OR s.name LIKE '%器械%' OR s.name LIKE '%私教%')) OR (c.code = 'yoga' AND (s.name LIKE '%瑜伽%' OR s.name LIKE '%普拉提%')) OR (c.code = 'swimming' AND (s.name LIKE '%游泳%' OR s.name LIKE '%泳池%')));
+INSERT IGNORE INTO `tb_shop_sub_category_relation` (`shop_id`, `sub_category_id`, `is_primary`, `source`, `confidence`)
+SELECT s.id, c.id, 1, 'rule', 0.88 FROM `tb_shop` s JOIN `tb_shop_sub_category` c ON c.parent_type_id = s.type_id
+WHERE s.type_id = 5 AND ((c.code = 'foot_massage' AND (s.name LIKE '%足疗%' OR s.name LIKE '%足道%' OR s.name LIKE '%修脚%')) OR (c.code = 'body_massage' AND (s.name LIKE '%按摩%' OR s.name LIKE '%推拿%' OR s.name LIKE '%理疗%')));
+INSERT IGNORE INTO `tb_shop_sub_category_relation` (`shop_id`, `sub_category_id`, `is_primary`, `source`, `confidence`)
+SELECT s.id, c.id, 1, 'rule', 0.88 FROM `tb_shop` s JOIN `tb_shop_sub_category` c ON c.parent_type_id = s.type_id
+WHERE s.type_id = 6 AND ((c.code = 'beauty_face' AND (s.name LIKE '%面部%' OR s.name LIKE '%补水%' OR s.name LIKE '%清洁%' OR s.name LIKE '%皮肤管理%')) OR (c.code = 'beauty_spa' AND (LOWER(s.name) LIKE '%spa%' OR s.name LIKE '%芳疗%' OR s.name LIKE '%身体%')));
+INSERT IGNORE INTO `tb_shop_sub_category_relation` (`shop_id`, `sub_category_id`, `is_primary`, `source`, `confidence`)
+SELECT s.id, c.id, 1, 'rule', 0.88 FROM `tb_shop` s JOIN `tb_shop_sub_category` c ON c.parent_type_id = s.type_id
+WHERE s.type_id = 7 AND ((c.code = 'kids_playground' AND (s.name LIKE '%儿童乐园%' OR s.name LIKE '%淘气堡%' OR s.name LIKE '%亲子乐园%')) OR (c.code = 'parent_child_diy' AND (s.name LIKE '%DIY%' OR s.name LIKE '%手工%' OR s.name LIKE '%绘本%')));
+INSERT IGNORE INTO `tb_shop_sub_category_relation` (`shop_id`, `sub_category_id`, `is_primary`, `source`, `confidence`)
+SELECT s.id, c.id, 1, 'rule', 0.88 FROM `tb_shop` s JOIN `tb_shop_sub_category` c ON c.parent_type_id = s.type_id
+WHERE s.type_id = 8 AND ((c.code = 'cocktail_bar' AND (s.name LIKE '%鸡尾酒%' OR LOWER(s.name) LIKE '%cocktail%' OR LOWER(s.name) LIKE '%bar%')) OR (c.code = 'livehouse' AND (LOWER(s.name) LIKE '%livehouse%' OR s.name LIKE '%驻唱%' OR s.name LIKE '%音乐%')) OR (c.code = 'craft_beer' AND (s.name LIKE '%精酿%' OR s.name LIKE '%啤酒%' OR s.name LIKE '%酒馆%')));
+INSERT IGNORE INTO `tb_shop_sub_category_relation` (`shop_id`, `sub_category_id`, `is_primary`, `source`, `confidence`)
+SELECT s.id, c.id, 1, 'rule', 0.88 FROM `tb_shop` s JOIN `tb_shop_sub_category` c ON c.parent_type_id = s.type_id
+WHERE s.type_id = 9 AND ((c.code = 'party_villa' AND (s.name LIKE '%生日%' OR s.name LIKE '%别墅%' OR s.name LIKE '%轰趴%' OR s.name LIKE '%聚会%')) OR (c.code = 'team_building' AND (s.name LIKE '%团建%' OR s.name LIKE '%公司聚会%')));
+INSERT IGNORE INTO `tb_shop_sub_category_relation` (`shop_id`, `sub_category_id`, `is_primary`, `source`, `confidence`)
+SELECT s.id, c.id, 1, 'rule', 0.88 FROM `tb_shop` s JOIN `tb_shop_sub_category` c ON c.parent_type_id = s.type_id
+WHERE s.type_id = 10 AND ((c.code = 'manicure' AND (s.name LIKE '%美甲%' OR s.name LIKE '%手部%')) OR (c.code = 'eyelash' AND (s.name LIKE '%美睫%' OR s.name LIKE '%睫毛%')));
+
+-- ----------------------------
 -- Table structure for tb_voucher
 -- ----------------------------
 DROP TABLE IF EXISTS `tb_voucher`;

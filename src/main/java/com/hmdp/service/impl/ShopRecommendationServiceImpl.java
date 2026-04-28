@@ -10,6 +10,7 @@ import com.hmdp.entity.Voucher;
 import com.hmdp.service.IBlogService;
 import com.hmdp.service.IShopRecommendationService;
 import com.hmdp.service.IShopService;
+import com.hmdp.service.IShopSubCategoryService;
 import com.hmdp.service.IVoucherService;
 import org.springframework.stereotype.Service;
 import org.springframework.data.geo.Distance;
@@ -46,7 +47,6 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
     private static final int MAX_ENRICHMENT_CANDIDATES = 24;
     private static final double GEO_SEARCH_RADIUS_METERS = 8000D;
     private static final double NEARBY_DISTANCE_LIMIT_METERS = 50000D;
-    private static final String[] KEYWORD_HINTS = {"火锅", "咖啡", "烧烤", "奶茶", "酒吧", "KTV", "spa", "美发", "足疗"};
 
     @Resource
     private IShopService shopService;
@@ -56,6 +56,9 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
 
     @Resource
     private IBlogService blogService;
+
+    @Resource
+    private IShopSubCategoryService shopSubCategoryService;
 
     @Resource
     private StringRedisTemplate stringRedisTemplate;
@@ -72,15 +75,16 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
         int resultLimit = limit == null ? 5 : Math.max(1, Math.min(limit, 10));
         boolean useLocation = x != null && y != null;
         String normalizedKeyword = normalizeKeyword(keyword);
-        List<Shop> candidates = loadCandidates(normalizedKeyword, typeId, maxBudget, x, y, useLocation);
+        Set<Long> categoryMatchedShopIds = loadMatchedSubCategoryShopIds(normalizedKeyword, typeId);
+        List<Shop> candidates = loadCandidates(normalizedKeyword, typeId, maxBudget, x, y, useLocation, categoryMatchedShopIds);
         if (candidates == null || candidates.isEmpty()) {
             return Collections.emptyList();
         }
 
         // 这里只做轻量过滤和粗排，避免所有候选都去查优惠券和博客。
         List<Shop> shortlisted = candidates.stream()
-                .filter(shop -> matchesBudget(shop, maxBudget) && matchesKeyword(shop, normalizedKeyword))
-                .sorted(Comparator.comparingDouble((Shop shop) -> baseCandidateScore(shop, normalizedKeyword, x, y)).reversed())
+                .filter(shop -> matchesBudget(shop, maxBudget) && matchesKeyword(shop, normalizedKeyword, categoryMatchedShopIds))
+                .sorted(Comparator.comparingDouble((Shop shop) -> baseCandidateScore(shop, normalizedKeyword, x, y, categoryMatchedShopIds)).reversed())
                 .limit(resolveEnrichmentLimit(resultLimit, couponOnly))
                 .toList();
 
@@ -95,6 +99,7 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
             if (useLocation && dto.getDistanceMeters() != null && dto.getDistanceMeters() > NEARBY_DISTANCE_LIMIT_METERS) {
                 continue;
             }
+            dto.setRecommendationScore(dto.getRecommendationScore() + categoryMatchScore(shop, normalizedKeyword, categoryMatchedShopIds));
             recommendations.add(dto);
         }
 
@@ -123,7 +128,8 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
      * 2. GEO 不够时，再补数据库模糊查询结果。
      * 3. 关键词太窄时，最后再补一层类目级候选，避免完全无召回。
      */
-    private List<Shop> loadCandidates(String keyword, Integer typeId, Long maxBudget, Double x, Double y, boolean useLocation) {
+    private List<Shop> loadCandidates(String keyword, Integer typeId, Long maxBudget, Double x, Double y,
+                                      boolean useLocation, Set<Long> categoryMatchedShopIds) {
         Map<Long, Shop> merged = new LinkedHashMap<Long, Shop>();
         if (useLocation && typeId != null) {
             mergeCandidates(merged, loadNearbyCandidates(typeId, x, y));
@@ -131,6 +137,9 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
         int targetSize = useLocation ? MAX_CANDIDATES_WITH_LOCATION : MAX_CANDIDATES;
         if (merged.size() < (useLocation ? MIN_LOCATION_CANDIDATES : targetSize)) {
             mergeCandidates(merged, loadPrimaryDbCandidates(keyword, typeId, maxBudget, targetSize));
+        }
+        if (merged.size() < targetSize && StrUtil.isNotBlank(keyword)) {
+            mergeCandidates(merged, loadSubCategoryCandidates(categoryMatchedShopIds, typeId, maxBudget));
         }
         if (merged.size() < targetSize && StrUtil.isNotBlank(keyword)) {
             mergeCandidates(merged, loadSupplementDbCandidates(typeId, maxBudget, targetSize));
@@ -197,6 +206,38 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
                 .eq(typeId != null, "type_id", typeId)
                 .le(maxBudget != null, "avg_price", maxBudget)
                 .last("LIMIT " + limit)
+                .list();
+    }
+
+    /**
+     * 细分类候选召回。
+     * 用户说“海鲜”“瑜伽”“美甲”时，不再依赖 Java 里写死关键词，而是查 MySQL 字典和关联表。
+     */
+    private Set<Long> loadMatchedSubCategoryShopIds(String keyword, Integer typeId) {
+        if (shopSubCategoryService == null || StrUtil.isBlank(keyword)) {
+            return Collections.emptySet();
+        }
+        List<Long> shopIds = shopSubCategoryService.findMatchedShopIds(keyword, typeId, MAX_CANDIDATES_WITH_LOCATION);
+        if (shopIds == null || shopIds.isEmpty()) {
+            return Collections.emptySet();
+        }
+        return new LinkedHashSet<Long>(shopIds);
+    }
+
+    /**
+     * 细分类候选召回。
+     * 用户说“海鲜”“瑜伽”“美甲”时，不再依赖 Java 里写死关键词，而是查 MySQL 字典和关联表。
+     */
+    private List<Shop> loadSubCategoryCandidates(Set<Long> shopIds, Integer typeId, Long maxBudget) {
+        if (shopIds == null || shopIds.isEmpty()) {
+            return Collections.emptyList();
+        }
+        String orderedIds = StrUtil.join(",", shopIds);
+        return shopService.query()
+                .in("id", shopIds)
+                .eq(typeId != null, "type_id", typeId)
+                .le(maxBudget != null, "avg_price", maxBudget)
+                .last("ORDER BY FIELD(id," + orderedIds + ")")
                 .list();
     }
 
@@ -337,9 +378,9 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
     /**
      * 粗排分数只依赖轻量字段，保证召回阶段足够快。
      */
-    private double baseCandidateScore(Shop shop, String keyword, Double x, Double y) {
+    private double baseCandidateScore(Shop shop, String keyword, Double x, Double y, Set<Long> categoryMatchedShopIds) {
         double score = textualMatchScore(shop, keyword);
-        score += categoryMatchScore(shop, keyword);
+        score += categoryMatchScore(shop, keyword, categoryMatchedShopIds);
         score += shop.getScore() == null ? 0D : shop.getScore() / 10.0D;
         score += shop.getComments() == null ? 0D : Math.min(shop.getComments() / 300.0D, 1.2D);
         Double distance = shop.getDistance();
@@ -352,10 +393,10 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
         return score;
     }
 
-    private boolean matchesKeyword(Shop shop, String keyword) {
+    private boolean matchesKeyword(Shop shop, String keyword, Set<Long> categoryMatchedShopIds) {
         return StrUtil.isBlank(keyword)
                 || textualMatchScore(shop, keyword) > 0D
-                || categoryMatchScore(shop, keyword) > 0D;
+                || categoryMatchScore(shop, keyword, categoryMatchedShopIds) > 0D;
     }
 
     /**
@@ -404,7 +445,7 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
             variants.add(relaxed);
         }
         String addressPart = relaxed;
-        for (String hint : KEYWORD_HINTS) {
+        for (String hint : categoryHints(keyword)) {
             String lowerHint = hint.toLowerCase(Locale.ROOT);
             if (relaxed.contains(lowerHint)) {
                 variants.add(lowerHint);
@@ -437,38 +478,26 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
 
     /**
      * 当用户给的是“海鲜餐厅、约会餐厅”这类长句时，
-     * 这里补一层轻量品类语义匹配，避免必须要求整句命中门店名称。
+     * 这里委托细分类服务做 DB 字典匹配，避免把具体品类长期写死在代码里。
      */
-    private double categoryMatchScore(Shop shop, String keyword) {
+    private double categoryMatchScore(Shop shop, String keyword, Set<Long> categoryMatchedShopIds) {
         if (shop == null || StrUtil.isBlank(keyword)) {
             return 0D;
         }
-        String normalized = keyword.toLowerCase(Locale.ROOT);
-        double score = 0D;
-        if (normalized.contains("海鲜")) {
-            score += containsAnyText(shop, "海鲜", "渔", "酒家", "鲜") ? 1.6D : 0D;
+        if (categoryMatchedShopIds != null && categoryMatchedShopIds.contains(shop.getId())) {
+            return 1.6D;
         }
-        if (normalized.contains("火锅")) {
-            score += containsAnyText(shop, "火锅", "锅", "涮") ? 1.4D : 0D;
+        if (shopSubCategoryService == null) {
+            return 0D;
         }
-        if (normalized.contains("咖啡")) {
-            score += containsAnyText(shop, "咖啡", "coffee", "cafe") ? 1.4D : 0D;
-        }
-        if (normalized.contains("烧烤")) {
-            score += containsAnyText(shop, "烧烤", "烤肉", "烤") ? 1.4D : 0D;
-        }
-        return score;
+        return shopSubCategoryService.categoryMatchScore(shop, keyword);
     }
 
-    private boolean containsAnyText(Shop shop, String... values) {
-        for (String value : values) {
-            if (containsText(shop.getName(), value.toLowerCase(Locale.ROOT))
-                    || containsText(shop.getArea(), value.toLowerCase(Locale.ROOT))
-                    || containsText(shop.getAddress(), value.toLowerCase(Locale.ROOT))) {
-                return true;
-            }
+    private List<String> categoryHints(String keyword) {
+        if (shopSubCategoryService == null || StrUtil.isBlank(keyword)) {
+            return Collections.emptyList();
         }
-        return false;
+        return shopSubCategoryService.extractMatchedTerms(keyword);
     }
 
     private String normalizeKeyword(String keyword) {
