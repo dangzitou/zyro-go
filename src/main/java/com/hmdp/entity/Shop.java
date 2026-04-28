@@ -44,6 +44,12 @@ public class Shop implements Serializable {
     private Long typeId;
 
     /**
+     * 主子分类 id。
+     * 用于高频筛选、排序和统计，详细多标签关系仍然落在 tb_shop_sub_category_relation。
+     */
+    private Long primarySubCategoryId;
+
+    /**
      * 商铺图片，多个图片以','隔开
      */
     private String images;

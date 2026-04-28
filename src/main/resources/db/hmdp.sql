@@ -1236,6 +1236,13 @@ CREATE TABLE `tb_user_info`  (
 -- ----------------------------
 
 -- ----------------------------
+-- Extend tb_shop with primary sub category
+-- ----------------------------
+ALTER TABLE `tb_shop`
+ADD COLUMN `primary_sub_category_id` bigint(20) UNSIGNED NULL DEFAULT NULL COMMENT '主子分类id' AFTER `type_id`,
+ADD INDEX `idx_primary_sub_category`(`primary_sub_category_id`) USING BTREE;
+
+-- ----------------------------
 -- Table structure for tb_shop_sub_category
 -- ----------------------------
 DROP TABLE IF EXISTS `tb_shop_sub_category`;
@@ -1372,6 +1379,20 @@ WHERE s.type_id = 9 AND ((c.code = 'party_villa' AND (s.name LIKE '%生日%' OR 
 INSERT IGNORE INTO `tb_shop_sub_category_relation` (`shop_id`, `sub_category_id`, `is_primary`, `source`, `confidence`)
 SELECT s.id, c.id, 1, 'rule', 0.88 FROM `tb_shop` s JOIN `tb_shop_sub_category` c ON c.parent_type_id = s.type_id
 WHERE s.type_id = 10 AND ((c.code = 'manicure' AND (s.name LIKE '%美甲%' OR s.name LIKE '%手部%')) OR (c.code = 'eyelash' AND (s.name LIKE '%美睫%' OR s.name LIKE '%睫毛%')));
+
+UPDATE `tb_shop` s
+LEFT JOIN (
+  SELECT
+    r.shop_id,
+    CAST(SUBSTRING_INDEX(
+      GROUP_CONCAT(r.sub_category_id ORDER BY r.is_primary DESC, r.confidence DESC, r.sub_category_id ASC),
+      ',',
+      1
+    ) AS UNSIGNED) AS primary_sub_category_id
+  FROM `tb_shop_sub_category_relation` r
+  GROUP BY r.shop_id
+) picked ON picked.shop_id = s.id
+SET s.primary_sub_category_id = picked.primary_sub_category_id;
 
 -- ----------------------------
 -- Table structure for tb_voucher

@@ -6,6 +6,7 @@ import com.hmdp.entity.Shop;
 import com.hmdp.entity.ShopSubCategory;
 import com.hmdp.entity.ShopSubCategoryRelation;
 import com.hmdp.mapper.ShopSubCategoryMapper;
+import com.hmdp.service.IShopService;
 import com.hmdp.service.IShopSubCategoryRelationService;
 import com.hmdp.service.IShopSubCategoryService;
 import jakarta.annotation.Resource;
@@ -28,6 +29,9 @@ public class ShopSubCategoryServiceImpl extends ServiceImpl<ShopSubCategoryMappe
 
     @Resource
     private IShopSubCategoryRelationService relationService;
+
+    @Resource
+    private IShopService shopService;
 
     /**
      * 根据关键词命中字典中的细分类。
@@ -64,15 +68,34 @@ public class ShopSubCategoryServiceImpl extends ServiceImpl<ShopSubCategoryMappe
             return Collections.emptyList();
         }
         List<Long> categoryIds = categories.stream().map(ShopSubCategory::getId).toList();
+        Set<Long> shopIds = new LinkedHashSet<Long>();
+
+        // 主子分类字段是高频查询入口，优先走 tb_shop，命中更快也更符合线上检索路径。
+        List<Shop> primaryMatchedShops = shopService.query()
+                .in("primary_sub_category_id", categoryIds)
+                .last("LIMIT " + Math.max(limit, 1))
+                .list();
+        for (Shop shop : primaryMatchedShops) {
+            if (shop != null && shop.getId() != null) {
+                shopIds.add(shop.getId());
+            }
+        }
+        if (shopIds.size() >= limit) {
+            return new ArrayList<Long>(shopIds);
+        }
+
+        // 仍然保留多标签关联兜底，避免“烤鱼 + 海鲜”这类一店多类的召回被截断。
         List<ShopSubCategoryRelation> relations = relationService.query()
                 .in("sub_category_id", categoryIds)
                 .orderByDesc("is_primary")
                 .orderByDesc("confidence")
                 .last("LIMIT " + Math.max(limit, 1))
                 .list();
-        Set<Long> shopIds = new LinkedHashSet<Long>();
         for (ShopSubCategoryRelation relation : relations) {
             shopIds.add(relation.getShopId());
+            if (shopIds.size() >= limit) {
+                break;
+            }
         }
         return new ArrayList<Long>(shopIds);
     }
@@ -92,6 +115,9 @@ public class ShopSubCategoryServiceImpl extends ServiceImpl<ShopSubCategoryMappe
             return 0D;
         }
         List<Long> categoryIds = categories.stream().map(ShopSubCategory::getId).toList();
+        if (shop.getPrimarySubCategoryId() != null && categoryIds.contains(shop.getPrimarySubCategoryId())) {
+            return 1.6D;
+        }
         long relationCount = relationService.query()
                 .eq("shop_id", shop.getId())
                 .in("sub_category_id", categoryIds)
