@@ -346,6 +346,13 @@ public class AiAgentServiceImpl implements IAiAgentService {
                     prefetched.promptContext(),
                     assembledContext
             );
+            String systemPrompt = buildSystemPrompt(
+                    executionPlan,
+                    retrievalHits,
+                    localLifeRagService.isReady() && useKnowledge,
+                    prefetched.promptContext(),
+                    assembledContext
+            );
 
             StringBuilder answerBuilder = new StringBuilder();
             Disposable disposable = requestSpec.stream().content().subscribe(
@@ -354,6 +361,20 @@ public class AiAgentServiceImpl implements IAiAgentService {
                         sendEventQuietly(emitter, "chunk", Map.of("content", chunk));
                     },
                     error -> {
+                        if (streamWithBridgeFallback(
+                                emitter,
+                                clientConversationId,
+                                storageConversationId,
+                                systemPrompt,
+                                request.getMessage().trim(),
+                                retrievalHits,
+                                executionPlan,
+                                currentUser,
+                                request,
+                                startedAt
+                        )) {
+                            return;
+                        }
                         log.error("AI agent stream failed, conversationId={}", clientConversationId, error);
                         if (prefetched.hasData()) {
                             streamPlainAnswer(emitter, clientConversationId, storageConversationId, prefetched.directAnswer(), retrievalHits, executionPlan, currentUser, request, startedAt);
@@ -1008,6 +1029,33 @@ public class AiAgentServiceImpl implements IAiAgentService {
                 return content == null ? "" : content;
             }
             throw ex;
+        }
+    }
+
+    private boolean streamWithBridgeFallback(SseEmitter emitter,
+                                             String conversationId,
+                                             String storageConversationId,
+                                             String systemPrompt,
+                                             String userPrompt,
+                                             List<AiRetrievalHit> retrievalHits,
+                                             AgentExecutionPlan executionPlan,
+                                             UserDTO currentUser,
+                                             AiChatRequest request,
+                                             long startedAt) {
+        if (openAiCompatibleStreamBridge == null || !openAiCompatibleStreamBridge.available()) {
+            return false;
+        }
+        try {
+            traceContext.record("llm_stream_bridge_fallback(reason=stream_error)");
+            String answer = openAiCompatibleStreamBridge.chat(systemPrompt, userPrompt);
+            if (StrUtil.isBlank(answer)) {
+                return false;
+            }
+            streamPlainAnswer(emitter, conversationId, storageConversationId, answer, retrievalHits, executionPlan, currentUser, request, startedAt);
+            return true;
+        } catch (Exception bridgeError) {
+            log.warn("LLM stream bridge fallback failed, conversationId={}", conversationId, bridgeError);
+            return false;
         }
     }
 
