@@ -3,7 +3,11 @@ package com.hmdp.utils;
 import com.hmdp.dto.UserDTO;
 
 public class UserHolder {
-    private static final ThreadLocal<UserDTO> tl = new ThreadLocal<>();
+    /**
+     * Agent tool calls may hop to child threads during model orchestration.
+     * InheritableThreadLocal keeps the authenticated user context available in that path.
+     */
+    private static final InheritableThreadLocal<UserDTO> tl = new InheritableThreadLocal<>();
 
     public static void saveUser(UserDTO userDTO){
         tl.set(userDTO);

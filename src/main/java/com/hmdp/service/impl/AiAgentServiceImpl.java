@@ -353,6 +353,7 @@ public class AiAgentServiceImpl implements IAiAgentService {
                     prefetched.promptContext(),
                     assembledContext
             );
+            List<String> preStreamTrace = traceContext.snapshot();
 
             StringBuilder answerBuilder = new StringBuilder();
             Disposable disposable = requestSpec.stream().content().subscribe(
@@ -371,7 +372,8 @@ public class AiAgentServiceImpl implements IAiAgentService {
                                 executionPlan,
                                 currentUser,
                                 request,
-                                startedAt
+                                startedAt,
+                                preStreamTrace
                         )) {
                             return;
                         }
@@ -381,14 +383,14 @@ public class AiAgentServiceImpl implements IAiAgentService {
                             return;
                         }
                         sendEventQuietly(emitter, "error", Map.of("message", "流式调用失败，请稍后重试。"));
-                        AiChatResponse response = new AiChatResponse(clientConversationId, answerBuilder.toString(), traceContext.snapshot(), retrievalHits, executionPlan);
+                        AiChatResponse response = new AiChatResponse(clientConversationId, answerBuilder.toString(), mergeTrace(preStreamTrace), retrievalHits, executionPlan);
                         audit(currentUser, request, response, startedAt, "FAILED");
                         traceContext.clear();
                         emitter.complete();
                     },
                     () -> {
                         String finalAnswer = StrUtil.blankToDefault(answerBuilder.toString(), prefetched.directAnswer());
-                        AiChatResponse response = new AiChatResponse(clientConversationId, finalAnswer, traceContext.snapshot(), retrievalHits, executionPlan);
+                        AiChatResponse response = new AiChatResponse(clientConversationId, finalAnswer, mergeTrace(preStreamTrace), retrievalHits, executionPlan);
                         recordTurnQuietly(storageConversationId, currentUser.getId(), request.getMessage().trim(), finalAnswer, executionPlan);
                         sendEventQuietly(emitter, "done", response);
                         audit(currentUser, request, response, startedAt, "SUCCESS");
@@ -488,10 +490,30 @@ public class AiAgentServiceImpl implements IAiAgentService {
             }
         }
 
-        if (executionPlan.getPreferredTools() != null && !executionPlan.getPreferredTools().isEmpty()) {
-            requestSpec = requestSpec.toolNames(executionPlan.getPreferredTools().toArray(new String[0]));
+        List<String> toolNames = toolNamesForModel(executionPlan, prefetchedContext);
+        if (!toolNames.isEmpty()) {
+            requestSpec = requestSpec.toolNames(toolNames.toArray(new String[0]));
         }
         return requestSpec;
+    }
+
+    private List<String> toolNamesForModel(AgentExecutionPlan executionPlan, String prefetchedContext) {
+        if (executionPlan == null || executionPlan.getPreferredTools() == null || executionPlan.getPreferredTools().isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<String> tools = new ArrayList<String>(executionPlan.getPreferredTools());
+        if (hasPrefetchedCurrentUserLocation(prefetchedContext)) {
+            // The location tool has already been executed on the authenticated request thread.
+            // Do not let an async model tool call repeat it and lose UserHolder in a Reactor worker.
+            tools.remove("get_current_user_location");
+        }
+        return tools;
+    }
+
+    private boolean hasPrefetchedCurrentUserLocation(String prefetchedContext) {
+        return StrUtil.isNotBlank(prefetchedContext)
+                && (prefetchedContext.contains("current_user_location:")
+                || prefetchedContext.contains("current_user_profile_address:"));
     }
 
     private String buildSystemPrompt(AgentExecutionPlan executionPlan,
@@ -514,7 +536,11 @@ public class AiAgentServiceImpl implements IAiAgentService {
             if (Boolean.TRUE.equals(executionPlan.getNearby())
                     && StrUtil.isBlank(executionPlan.getCity())
                     && StrUtil.isBlank(executionPlan.getLocationHint())) {
-                builder.append("\nWhen the user says nearby / around here without an explicit place, call get_current_user_location first, then use the returned coordinates for shop recommendation.");
+                if (hasPrefetchedCurrentUserLocation(prefetchedContext)) {
+                    builder.append("\nThe current user location has already been prefetched below. Use those coordinates for nearby recommendation and do not call get_current_user_location again.");
+                } else {
+                    builder.append("\nWhen the user says nearby / around here without an explicit place, call get_current_user_location first, then use the returned coordinates for shop recommendation.");
+                }
             }
         }
         if (StrUtil.isNotBlank(prefetchedContext)) {
@@ -562,7 +588,8 @@ public class AiAgentServiceImpl implements IAiAgentService {
         boolean couponOnly = containsAny(message.toLowerCase(Locale.ROOT), "优惠", "券", "折扣", "coupon", "discount");
         boolean nearbyRequested = Boolean.TRUE.equals(executionPlan.getNearby())
                 || containsAny(message.toLowerCase(Locale.ROOT), "附近", "周边", "nearby");
-        UserLocationContext userLocation = loadUserLocationContext(currentUser);
+        List<String> preferredTools = executionPlan.getPreferredTools();
+        UserLocationContext userLocation = resolvePrefetchedUserLocation(currentUser, preferredTools, nearbyRequested);
         Double effectiveX = userLocation.longitude();
         Double effectiveY = userLocation.latitude();
         BaiduMapGeoService.GeoPoint explicitGeoPoint = resolveExplicitGeoPoint(executionPlan, userLocation);
@@ -580,7 +607,6 @@ public class AiAgentServiceImpl implements IAiAgentService {
             recommendationQuery.setCity(userLocation.city());
         }
 
-        List<String> preferredTools = executionPlan.getPreferredTools();
         List<String> contextLines = new ArrayList<String>();
         StringBuilder answer = new StringBuilder();
         appendUserLocationContext(contextLines, executionPlan, userLocation, explicitGeoPoint, nearbyRequested);
@@ -690,6 +716,31 @@ public class AiAgentServiceImpl implements IAiAgentService {
             return new PrefetchedToolContext(String.join("\n", contextLines), "", contextLines.size());
         }
         return PrefetchedToolContext.empty();
+    }
+
+    private UserLocationContext resolvePrefetchedUserLocation(UserDTO currentUser,
+                                                              List<String> preferredTools,
+                                                              boolean nearbyRequested) {
+        boolean shouldCallLocationTool = nearbyRequested
+                || (preferredTools != null && preferredTools.contains("get_current_user_location"));
+        if (shouldCallLocationTool) {
+            LocalLifeAgentTools.UserLocationCard card = localLifeAgentTools.getCurrentUserLocation();
+            if (card != null && Boolean.TRUE.equals(card.available())) {
+                return new UserLocationContext(card.city(), card.address(), card.longitude(), card.latitude());
+            }
+            UserLocationContext fallback = loadUserLocationContext(currentUser);
+            if (fallback.available()) {
+                traceContext.record("get_current_user_location_prefetch_fallback(userId="
+                        + (currentUser == null ? "-" : currentUser.getId())
+                        + ") -> available=true");
+                return fallback;
+            }
+            if (card != null && StrUtil.isNotBlank(card.address())) {
+                return new UserLocationContext(card.city(), card.address(), card.longitude(), card.latitude());
+            }
+            return fallback;
+        }
+        return loadUserLocationContext(currentUser);
     }
 
     private UserLocationContext loadUserLocationContext(UserDTO currentUser) {
@@ -953,12 +1004,26 @@ public class AiAgentServiceImpl implements IAiAgentService {
                                    UserDTO currentUser,
                                    AiChatRequest request,
                                    long startedAt) {
+        streamPlainAnswer(emitter, conversationId, storageConversationId, answer, retrievalHits,
+                executionPlan, currentUser, request, startedAt, Collections.emptyList());
+    }
+
+    private void streamPlainAnswer(SseEmitter emitter,
+                                   String conversationId,
+                                   String storageConversationId,
+                                   String answer,
+                                   List<AiRetrievalHit> retrievalHits,
+                                   AgentExecutionPlan executionPlan,
+                                   UserDTO currentUser,
+                                   AiChatRequest request,
+                                   long startedAt,
+                                   List<String> baseTrace) {
         try {
             for (int i = 0; i < answer.length(); i += 24) {
                 String chunk = answer.substring(i, Math.min(i + 24, answer.length()));
                 sendEvent(emitter, "chunk", Map.of("content", chunk));
             }
-            AiChatResponse response = new AiChatResponse(conversationId, answer, traceContext.snapshot(), retrievalHits, executionPlan);
+            AiChatResponse response = new AiChatResponse(conversationId, answer, mergeTrace(baseTrace), retrievalHits, executionPlan);
             recordTurnQuietly(storageConversationId, currentUser == null ? null : currentUser.getId(),
                     request == null ? null : request.getMessage(), answer, executionPlan);
             sendEvent(emitter, "done", response);
@@ -1004,6 +1069,19 @@ public class AiAgentServiceImpl implements IAiAgentService {
 
     private String safe(Object value) {
         return value == null ? "-" : String.valueOf(value);
+    }
+
+    private List<String> mergeTrace(List<String> baseTrace) {
+        List<String> merged = new ArrayList<String>();
+        if (baseTrace != null) {
+            merged.addAll(baseTrace);
+        }
+        for (String trace : traceContext.snapshot()) {
+            if (!merged.contains(trace)) {
+                merged.add(trace);
+            }
+        }
+        return merged;
     }
 
     private String formatPrice(Long price) {
@@ -1074,7 +1152,8 @@ public class AiAgentServiceImpl implements IAiAgentService {
                                              AgentExecutionPlan executionPlan,
                                              UserDTO currentUser,
                                              AiChatRequest request,
-                                             long startedAt) {
+                                             long startedAt,
+                                             List<String> preStreamTrace) {
         if (openAiCompatibleStreamBridge == null || !openAiCompatibleStreamBridge.available()) {
             return false;
         }
@@ -1084,7 +1163,7 @@ public class AiAgentServiceImpl implements IAiAgentService {
             if (StrUtil.isBlank(answer)) {
                 return false;
             }
-            streamPlainAnswer(emitter, conversationId, storageConversationId, answer, retrievalHits, executionPlan, currentUser, request, startedAt);
+            streamPlainAnswer(emitter, conversationId, storageConversationId, answer, retrievalHits, executionPlan, currentUser, request, startedAt, preStreamTrace);
             return true;
         } catch (Exception bridgeError) {
             log.warn("LLM stream bridge fallback failed, conversationId={}", conversationId, bridgeError);

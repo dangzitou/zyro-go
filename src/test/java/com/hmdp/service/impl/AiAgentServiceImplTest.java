@@ -324,6 +324,77 @@ class AiAgentServiceImplTest {
     }
 
     @Test
+    void shouldUseCurrentUserLocationToolBeforeNearbyRecommendation() {
+        AiProperties properties = new AiProperties();
+        properties.setEnabled(true);
+        properties.setKnowledgeEnabled(false);
+        properties.setRecursiveToolLoopEnabled(false);
+
+        IAiKnowledgeService knowledgeService = mock(IAiKnowledgeService.class);
+        IAgentPlanningService planningService = mock(IAgentPlanningService.class);
+        IAgentAuditService auditService = mock(IAgentAuditService.class);
+        LocalLifeRagService ragService = mock(LocalLifeRagService.class);
+        LocalLifeAgentTools localLifeAgentTools = mock(LocalLifeAgentTools.class);
+        IUserInfoService userInfoService = mock(IUserInfoService.class);
+        stubEmptyTools(localLifeAgentTools);
+
+        AgentExecutionPlan plan = new AgentExecutionPlan("recommendation", false, true, "附近 火锅", "concise", "compare_candidates",
+                List.of("get_current_user_location", "recommend_shops"));
+        plan.setNearby(true);
+        when(planningService.plan(anyString())).thenReturn(plan);
+        when(localLifeAgentTools.getCurrentUserLocation()).thenReturn(
+                new LocalLifeAgentTools.UserLocationCard(
+                        true,
+                        "广州市",
+                        "广州市天河区枫叶路加拿大小区",
+                        113.328970D,
+                        23.136996D,
+                        "ok"
+                )
+        );
+        when(localLifeAgentTools.recommendShops(any(ShopRecommendationQuery.class))).thenReturn(List.of());
+
+        ToolCallbackProvider toolCallbackProvider = () -> new org.springframework.ai.tool.ToolCallback[0];
+        ChatMemory chatMemory = MessageWindowChatMemory.builder()
+                .chatMemoryRepository(new InMemoryChatMemoryRepository())
+                .maxMessages(8)
+                .build();
+
+        AiAgentServiceImpl service = new AiAgentServiceImpl(
+                properties,
+                emptyProvider(),
+                toolCallbackProvider,
+                knowledgeService,
+                planningService,
+                auditService,
+                ragService,
+                new StaticListableBeanFactory().getBeanProvider(org.springframework.ai.model.tool.ToolCallingManager.class),
+                new AgentTraceContext(),
+                localLifeAgentTools,
+                userInfoService,
+                null,
+                contextCompressionService(properties, chatMemory),
+                null
+        );
+
+        UserDTO user = new UserDTO();
+        user.setId(21L);
+        user.setNickName("nearby-user");
+        UserHolder.saveUser(user);
+
+        AiChatRequest request = new AiChatRequest();
+        request.setMessage("帮我推荐附近适合聚餐、人均100左右、最好还有优惠券的火锅店");
+
+        service.chat(request);
+
+        verify(localLifeAgentTools).getCurrentUserLocation();
+        verify(localLifeAgentTools).recommendShops(argThat(query ->
+                query != null
+                        && Double.valueOf(113.328970D).equals(query.getX())
+                        && Double.valueOf(23.136996D).equals(query.getY())));
+    }
+
+    @Test
     void shouldTriggerContextCompressionAfterTwentyPlusPrompts() {
         AiProperties properties = new AiProperties();
         properties.setEnabled(true);
