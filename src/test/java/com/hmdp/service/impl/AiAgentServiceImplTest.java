@@ -8,12 +8,14 @@ import com.hmdp.ai.LocalLifeAgentTools;
 import com.hmdp.ai.LongTermMemoryFact;
 import com.hmdp.ai.MemoryExtractionService;
 import com.hmdp.ai.TokenBudgetEstimator;
+import com.hmdp.ai.rag.BaiduMapGeoService;
 import com.hmdp.ai.rag.LocalLifeRagService;
 import com.hmdp.config.AiProperties;
 import com.hmdp.dto.AgentExecutionPlan;
 import com.hmdp.dto.AiChatRequest;
 import com.hmdp.dto.AiChatResponse;
 import com.hmdp.dto.AiRetrievalHit;
+import com.hmdp.dto.ShopRecommendationQuery;
 import com.hmdp.dto.ShopRecommendationDTO;
 import com.hmdp.dto.UserDTO;
 import com.hmdp.entity.UserInfo;
@@ -49,8 +51,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class AiAgentServiceImplTest {
@@ -247,6 +251,76 @@ class AiAgentServiceImplTest {
         AiChatResponse response = service.chat(request);
         assertTrue(response.getAnswer().contains("暂时没有找到满足条件的候选店"));
         assertTrue(response.getToolTrace().stream().anyMatch(line -> line.contains("fallback_prefetch")));
+    }
+
+    @Test
+    void shouldGeocodeCurrentUserAddressWhenCoordinatesAreMissing() {
+        AiProperties properties = new AiProperties();
+        properties.setEnabled(true);
+        properties.setKnowledgeEnabled(false);
+        properties.setRecursiveToolLoopEnabled(false);
+
+        IAiKnowledgeService knowledgeService = mock(IAiKnowledgeService.class);
+        IAgentPlanningService planningService = mock(IAgentPlanningService.class);
+        IAgentAuditService auditService = mock(IAgentAuditService.class);
+        LocalLifeRagService ragService = mock(LocalLifeRagService.class);
+        LocalLifeAgentTools localLifeAgentTools = mock(LocalLifeAgentTools.class);
+        IUserInfoService userInfoService = mock(IUserInfoService.class);
+        BaiduMapGeoService baiduMapGeoService = mock(BaiduMapGeoService.class);
+        stubEmptyTools(localLifeAgentTools);
+
+        when(planningService.plan(anyString())).thenReturn(
+                new AgentExecutionPlan("recommendation", false, true, "附近 餐厅", "concise", "compare_candidates",
+                        List.of("recommend_shops"))
+        );
+        when(localLifeAgentTools.recommendShops(any(ShopRecommendationQuery.class))).thenReturn(List.of());
+
+        UserInfo userInfo = new UserInfo();
+        userInfo.setUserId(12L);
+        userInfo.setCity("广州市");
+        userInfo.setAddress("广州市天河区枫叶路加拿大小区");
+        when(userInfoService.getById(12L)).thenReturn(userInfo);
+        when(baiduMapGeoService.geocodeAddress("广州市", "广州市天河区枫叶路加拿大小区"))
+                .thenReturn(new BaiduMapGeoService.GeoPoint(113.328970D, 23.136996D, "广州市天河区枫叶路加拿大小区"));
+
+        ToolCallbackProvider toolCallbackProvider = () -> new org.springframework.ai.tool.ToolCallback[0];
+        ChatMemory chatMemory = MessageWindowChatMemory.builder()
+                .chatMemoryRepository(new InMemoryChatMemoryRepository())
+                .maxMessages(8)
+                .build();
+
+        AiAgentServiceImpl service = new AiAgentServiceImpl(
+                properties,
+                emptyProvider(),
+                toolCallbackProvider,
+                knowledgeService,
+                planningService,
+                auditService,
+                ragService,
+                new StaticListableBeanFactory().getBeanProvider(org.springframework.ai.model.tool.ToolCallingManager.class),
+                new AgentTraceContext(),
+                localLifeAgentTools,
+                userInfoService,
+                baiduMapGeoService,
+                contextCompressionService(properties, chatMemory),
+                null
+        );
+
+        UserDTO user = new UserDTO();
+        user.setId(12L);
+        user.setNickName("geo-user");
+        UserHolder.saveUser(user);
+
+        AiChatRequest request = new AiChatRequest();
+        request.setMessage("帮我看看我附近有什么吃的");
+
+        service.chat(request);
+
+        verify(baiduMapGeoService).geocodeAddress("广州市", "广州市天河区枫叶路加拿大小区");
+        verify(localLifeAgentTools).recommendShops(argThat(query ->
+                query != null
+                        && Double.valueOf(113.328970D).equals(query.getX())
+                        && Double.valueOf(23.136996D).equals(query.getY())));
     }
 
     @Test

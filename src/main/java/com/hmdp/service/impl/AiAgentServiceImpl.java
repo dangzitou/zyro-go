@@ -511,6 +511,11 @@ public class AiAgentServiceImpl implements IAiAgentService {
                 builder.append(", preferredTools=").append(executionPlan.getPreferredTools());
             }
             builder.append(".");
+            if (Boolean.TRUE.equals(executionPlan.getNearby())
+                    && StrUtil.isBlank(executionPlan.getCity())
+                    && StrUtil.isBlank(executionPlan.getLocationHint())) {
+                builder.append("\nWhen the user says nearby / around here without an explicit place, call get_current_user_location first, then use the returned coordinates for shop recommendation.");
+            }
         }
         if (StrUtil.isNotBlank(prefetchedContext)) {
             builder.append("\nPrefetched business facts:\n")
@@ -578,21 +583,11 @@ public class AiAgentServiceImpl implements IAiAgentService {
         List<String> preferredTools = executionPlan.getPreferredTools();
         List<String> contextLines = new ArrayList<String>();
         StringBuilder answer = new StringBuilder();
+        appendUserLocationContext(contextLines, executionPlan, userLocation, explicitGeoPoint, nearbyRequested);
 
         if (preferredTools.contains("recommend_shops")) {
             List<ShopRecommendationDTO> recommendations = localLifeAgentTools.recommendShops(recommendationQuery);
             if (!recommendations.isEmpty()) {
-                if (userLocation.available()) {
-                    contextLines.add("user_location: city=" + safe(userLocation.city())
-                            + ", address=" + safe(userLocation.address())
-                            + ", longitude=" + safe(userLocation.longitude())
-                            + ", latitude=" + safe(userLocation.latitude()));
-                }
-                if (explicitGeoPoint != null) {
-                    contextLines.add("explicit_location: address=" + safe(explicitGeoPoint.resolvedAddress())
-                            + ", longitude=" + safe(explicitGeoPoint.lng())
-                            + ", latitude=" + safe(explicitGeoPoint.lat()));
-                }
                 int index = 1;
                 for (ShopRecommendationDTO item : recommendations) {
                     contextLines.add("recommendation#" + index + ": shopId=" + item.getShopId()
@@ -626,11 +621,7 @@ public class AiAgentServiceImpl implements IAiAgentService {
                 return new PrefetchedToolContext(String.join("\n", contextLines), answer.toString().trim(), contextLines.size());
             }
             if (nearbyRequested && userLocation.available()) {
-                contextLines.add("user_location: city=" + safe(userLocation.city())
-                        + ", address=" + safe(userLocation.address())
-                        + ", longitude=" + safe(userLocation.longitude())
-                        + ", latitude=" + safe(userLocation.latitude())
-                        + ", nearbyResult=empty");
+                contextLines.add("nearby_search_result: empty");
                 return new PrefetchedToolContext(
                         String.join("\n", contextLines),
                         "我按你当前地址附近查了一遍，但暂时没有找到满足条件的候选店。你可以放宽预算、换一个品类，或者去掉优惠限制再试一次。",
@@ -641,7 +632,7 @@ public class AiAgentServiceImpl implements IAiAgentService {
 
         if (preferredTools.contains("search_shops") || preferredTools.contains("get_shop_detail")) {
             if (nearbyRequested && userLocation.available()) {
-                return PrefetchedToolContext.empty();
+                return new PrefetchedToolContext(String.join("\n", contextLines), "", contextLines.size());
             }
             String keyword = resolveKeyword(message, executionPlan);
             Integer typeId = resolveTypeId(message, executionPlan);
@@ -695,6 +686,9 @@ public class AiAgentServiceImpl implements IAiAgentService {
             }
         }
 
+        if (!contextLines.isEmpty()) {
+            return new PrefetchedToolContext(String.join("\n", contextLines), "", contextLines.size());
+        }
         return PrefetchedToolContext.empty();
     }
 
@@ -706,12 +700,51 @@ public class AiAgentServiceImpl implements IAiAgentService {
         if (userInfo == null) {
             return UserLocationContext.empty();
         }
+        if ((userInfo.getLocationX() == null || userInfo.getLocationY() == null)
+                && baiduMapGeoService != null
+                && StrUtil.isNotBlank(userInfo.getAddress())) {
+            BaiduMapGeoService.GeoPoint profileGeo = baiduMapGeoService.geocodeAddress(userInfo.getCity(), userInfo.getAddress());
+            if (profileGeo != null) {
+                userInfo.setLocationX(profileGeo.lng());
+                userInfo.setLocationY(profileGeo.lat());
+                userInfoService.updateById(userInfo);
+            }
+        }
         return new UserLocationContext(
                 userInfo.getCity(),
                 userInfo.getAddress(),
                 userInfo.getLocationX(),
                 userInfo.getLocationY()
         );
+    }
+
+    private void appendUserLocationContext(List<String> contextLines,
+                                           AgentExecutionPlan executionPlan,
+                                           UserLocationContext userLocation,
+                                           BaiduMapGeoService.GeoPoint explicitGeoPoint,
+                                           boolean nearbyRequested) {
+        if (contextLines == null) {
+            return;
+        }
+        if (userLocation.available()) {
+            contextLines.add("current_user_location: city=" + safe(userLocation.city())
+                    + ", address=" + safe(userLocation.address())
+                    + ", longitude=" + safe(userLocation.longitude())
+                    + ", latitude=" + safe(userLocation.latitude()));
+            if (nearbyRequested) {
+                contextLines.add("location_instruction: when nearby intent has no explicit place, use current_user_location coordinates first.");
+            }
+        } else if (StrUtil.isNotBlank(userLocation.address())) {
+            contextLines.add("current_user_profile_address: city=" + safe(userLocation.city())
+                    + ", address=" + safe(userLocation.address()));
+        }
+        if (explicitGeoPoint != null) {
+            contextLines.add("explicit_request_location: city=" + safe(executionPlan == null ? null : executionPlan.getCity())
+                    + ", locationHint=" + safe(executionPlan == null ? null : executionPlan.getLocationHint())
+                    + ", resolvedAddress=" + safe(explicitGeoPoint.resolvedAddress())
+                    + ", longitude=" + safe(explicitGeoPoint.lng())
+                    + ", latitude=" + safe(explicitGeoPoint.lat()));
+        }
     }
 
     private boolean explicitLocationOverridesCurrentUser(AgentExecutionPlan executionPlan, UserLocationContext userLocation) {

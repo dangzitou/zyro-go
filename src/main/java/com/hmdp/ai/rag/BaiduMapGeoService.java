@@ -64,6 +64,37 @@ public class BaiduMapGeoService {
         }
     }
 
+    /**
+     * Exact-address geocoding is used for persisted user profiles.
+     * Unlike vague商圈 hints, a full profile address should not be expanded with suffix heuristics.
+     */
+    public GeoPoint geocodeAddress(String city, String address) {
+        if (!Boolean.TRUE.equals(aiProperties.getBaiduMap().getEnabled())
+                || !StringUtils.hasText(aiProperties.getBaiduMap().getAk())
+                || !StringUtils.hasText(address)) {
+            log.info("baidu_geo profile_address_disabled_or_missing city={}, address={}", city, address);
+            return null;
+        }
+        RestClient restClient = RestClient.builder()
+                .defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
+                .defaultHeader(HttpHeaders.USER_AGENT, "Mozilla/5.0")
+                .build();
+        try {
+            for (String candidateAddress : buildProfileAddresses(city, address)) {
+                GeoCandidate candidate = doGeocode(restClient, candidateAddress, city, address);
+                if (candidate != null) {
+                    GeoPoint point = new GeoPoint(candidate.lng(), candidate.lat(), candidate.address());
+                    log.info("baidu_geo profile_address_hit city={}, address={}, lng={}, lat={}, resolved={}",
+                            city, address, point.lng(), point.lat(), point.resolvedAddress());
+                    return point;
+                }
+            }
+        } catch (Exception e) {
+            log.warn("baidu_geo profile_address_failed city={}, address={}", city, address, e);
+        }
+        return null;
+    }
+
     private Set<String> buildCandidateAddresses(String city, String locationHint) {
         String base = StringUtils.hasText(city) ? city + locationHint : locationHint;
         Set<String> addresses = new LinkedHashSet<String>();
@@ -82,6 +113,16 @@ public class BaiduMapGeoService {
         if (looksLikeCampusOrPark(locationHint)) {
             addresses.add(base + "校区");
             addresses.add(base + "园区");
+        }
+        return addresses;
+    }
+
+    private Set<String> buildProfileAddresses(String city, String address) {
+        Set<String> addresses = new LinkedHashSet<String>();
+        String trimmedAddress = address.trim();
+        addresses.add(trimmedAddress);
+        if (StringUtils.hasText(city) && !trimmedAddress.startsWith(city)) {
+            addresses.add(city + trimmedAddress);
         }
         return addresses;
     }

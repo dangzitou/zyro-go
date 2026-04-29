@@ -6,13 +6,18 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.hmdp.dto.Result;
 import com.hmdp.dto.ShopRecommendationQuery;
 import com.hmdp.dto.ShopRecommendationDTO;
+import com.hmdp.dto.UserDTO;
+import com.hmdp.entity.UserInfo;
 import com.hmdp.entity.Blog;
 import com.hmdp.entity.Shop;
 import com.hmdp.entity.Voucher;
+import com.hmdp.ai.rag.BaiduMapGeoService;
 import com.hmdp.service.IBlogService;
 import com.hmdp.service.IShopRecommendationService;
 import com.hmdp.service.IShopService;
+import com.hmdp.service.IUserInfoService;
 import com.hmdp.service.IVoucherService;
+import com.hmdp.utils.UserHolder;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
@@ -32,15 +37,20 @@ public class LocalLifeAgentTools {
     private final IVoucherService voucherService;
     private final IBlogService blogService;
     private final IShopRecommendationService shopRecommendationService;
+    private final IUserInfoService userInfoService;
+    private final BaiduMapGeoService baiduMapGeoService;
     private final AgentTraceContext traceContext;
 
     public LocalLifeAgentTools(IShopService shopService, IVoucherService voucherService,
                                IBlogService blogService, IShopRecommendationService shopRecommendationService,
+                               IUserInfoService userInfoService, BaiduMapGeoService baiduMapGeoService,
                                AgentTraceContext traceContext) {
         this.shopService = shopService;
         this.voucherService = voucherService;
         this.blogService = blogService;
         this.shopRecommendationService = shopRecommendationService;
+        this.userInfoService = userInfoService;
+        this.baiduMapGeoService = baiduMapGeoService;
         this.traceContext = traceContext;
     }
 
@@ -127,6 +137,50 @@ public class LocalLifeAgentTools {
                 .collect(Collectors.toList());
         traceContext.record("get_hot_blogs(limit=" + size + ") -> " + result.size() + " blog(s)");
         return result;
+    }
+
+    /**
+     * Nearby intent often depends on the current logged-in user's saved profile location.
+     * This tool gives the model one explicit way to fetch that context before recommending shops.
+     */
+    @Tool(name = "get_current_user_location", description = "Fetch the current logged-in user's saved city, address and coordinates for nearby recommendations.")
+    public UserLocationCard getCurrentUserLocation() {
+        UserDTO currentUser = UserHolder.getUser();
+        if (currentUser == null || currentUser.getId() == null) {
+            traceContext.record("get_current_user_location() -> unauthenticated");
+            return new UserLocationCard(false, null, null, null, null, "unauthenticated");
+        }
+        UserInfo userInfo = userInfoService.getById(currentUser.getId());
+        if (userInfo == null) {
+            traceContext.record("get_current_user_location(userId=" + currentUser.getId() + ") -> missing_profile");
+            return new UserLocationCard(false, null, null, null, null, "missing_profile");
+        }
+        Double longitude = userInfo.getLocationX();
+        Double latitude = userInfo.getLocationY();
+        if ((longitude == null || latitude == null)
+                && baiduMapGeoService != null
+                && StrUtil.isNotBlank(userInfo.getAddress())) {
+            BaiduMapGeoService.GeoPoint point = baiduMapGeoService.geocodeAddress(userInfo.getCity(), userInfo.getAddress());
+            if (point != null) {
+                longitude = point.lng();
+                latitude = point.lat();
+                userInfo.setLocationX(longitude);
+                userInfo.setLocationY(latitude);
+                userInfoService.updateById(userInfo);
+            }
+        }
+        boolean available = StrUtil.isNotBlank(userInfo.getAddress()) && longitude != null && latitude != null;
+        traceContext.record("get_current_user_location(userId=" + currentUser.getId() + ") -> available=" + available
+                + ", city=" + safe(userInfo.getCity()) + ", address=" + safe(userInfo.getAddress())
+                + ", longitude=" + safe(longitude) + ", latitude=" + safe(latitude));
+        return new UserLocationCard(
+                available,
+                userInfo.getCity(),
+                userInfo.getAddress(),
+                longitude,
+                latitude,
+                available ? "ok" : "incomplete_profile"
+        );
     }
 
     /**
@@ -237,5 +291,13 @@ public class LocalLifeAgentTools {
     }
 
     public record BlogCard(Long blogId, String title, String snippet, Integer liked, Long shopId) {
+    }
+
+    public record UserLocationCard(Boolean available,
+                                   String city,
+                                   String address,
+                                   Double longitude,
+                                   Double latitude,
+                                   String status) {
     }
 }

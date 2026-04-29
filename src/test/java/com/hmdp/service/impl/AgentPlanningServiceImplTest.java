@@ -96,4 +96,21 @@ class AgentPlanningServiceImplTest {
 
         assertNull(genericPlan.getLocationHint());
     }
+
+    @Test
+    void shouldAddCurrentUserLocationToolForNearbyPromptWithoutExplicitPlace() {
+        AiProperties aiProperties = new AiProperties();
+        aiProperties.setEnabled(false);
+
+        AgentPlanningServiceImpl service = new AgentPlanningServiceImpl(
+                aiProperties,
+                new StaticListableBeanFactory().getBeanProvider(org.springframework.ai.chat.client.ChatClient.Builder.class)
+        );
+
+        AgentExecutionPlan nearbyPlan = service.plan("推荐我附近适合约会的餐厅");
+        AgentExecutionPlan selfLocationPlan = service.plan("我现在地址是哪里");
+
+        assertTrue(nearbyPlan.getPreferredTools().contains("get_current_user_location"));
+        assertTrue(selfLocationPlan.getPreferredTools().contains("get_current_user_location"));
+    }
 }

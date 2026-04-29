@@ -73,6 +73,7 @@ public class AgentPlanningServiceImpl implements IAgentPlanningService {
             17. negativePreferences should contain explicitly rejected preferences, such as 太辣 / 太贵
             18. If the user says "不要火锅，想吃清淡的", then category/subcategory should represent the wanted direction, and 火锅 should go into excludedCategories instead of category.
             19. preferredTools can only contain:
+               - get_current_user_location
                - search_shops
                - get_shop_detail
                - get_shop_coupons
@@ -93,6 +94,10 @@ public class AgentPlanningServiceImpl implements IAgentPlanningService {
 
     private static final String[] FACT_LOOKUP_CUES = {
             "营业时间", "几点开门", "几点关门", "评分", "地址", "电话", "优惠", "优惠券", "折扣"
+    };
+
+    private static final String[] CURRENT_LOCATION_CUES = {
+            "我现在地址", "我现在在哪", "我在哪", "我的位置", "当前位置", "当前地址", "我的地址"
     };
 
     private static final String[] FAST_FOOD_TERMS = {
@@ -398,8 +403,12 @@ public class AgentPlanningServiceImpl implements IAgentPlanningService {
     }
 
     private List<String> resolvePreferredTools(AgentExecutionPlan plan) {
+        boolean useCurrentUserLocationTool = shouldFetchCurrentUserLocation(plan);
         if ("recommendation".equals(plan.getIntent())) {
             List<String> tools = new ArrayList<String>();
+            if (useCurrentUserLocationTool) {
+                tools.add("get_current_user_location");
+            }
             tools.add("recommend_shops");
             if (Boolean.TRUE.equals(plan.getUseKnowledge())) {
                 tools.add("search_shops");
@@ -411,6 +420,9 @@ public class AgentPlanningServiceImpl implements IAgentPlanningService {
             return tools;
         }
         if ("factual_lookup".equals(plan.getIntent())) {
+            if (useCurrentUserLocationTool) {
+                return new ArrayList<String>(List.of("get_current_user_location", "search_shops", "get_shop_detail", "get_shop_coupons"));
+            }
             return new ArrayList<String>(List.of("search_shops", "get_shop_detail", "get_shop_coupons"));
         }
         if ("social_discovery".equals(plan.getIntent())) {
@@ -446,7 +458,21 @@ public class AgentPlanningServiceImpl implements IAgentPlanningService {
         if ("recommendation".equals(plan.getIntent()) && !tools.contains("recommend_shops")) {
             tools.add(0, "recommend_shops");
         }
+        if (shouldFetchCurrentUserLocation(plan) && !tools.contains("get_current_user_location")) {
+            tools.add(0, "get_current_user_location");
+        }
         return new ArrayList<String>(new LinkedHashSet<String>(tools));
+    }
+
+    private boolean shouldFetchCurrentUserLocation(AgentExecutionPlan plan) {
+        if (plan == null) {
+            return false;
+        }
+        boolean missingExplicitLocation = StrUtil.isBlank(plan.getLocationHint()) && StrUtil.isBlank(plan.getCity());
+        if (Boolean.TRUE.equals(plan.getNearby()) && missingExplicitLocation) {
+            return true;
+        }
+        return containsAny(StrUtil.blankToDefault(plan.getRetrievalQuery(), ""), CURRENT_LOCATION_CUES);
     }
 
     private String normalizeIntent(String primary, String fallback) {
