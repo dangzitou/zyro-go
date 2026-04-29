@@ -23,6 +23,8 @@ public class AiProperties {
     private Boolean plannerValidationEnabled = true;
     private Boolean recursiveToolLoopEnabled = true;
     @NestedConfigurationProperty
+    private AiContextCompressionProperties contextCompression = new AiContextCompressionProperties();
+    @NestedConfigurationProperty
     private AiBlogRagProperties blogRag = new AiBlogRagProperties();
     @NestedConfigurationProperty
     private AiEmbeddingProperties embedding = new AiEmbeddingProperties();

@@ -1,7 +1,13 @@
 package com.hmdp.service.impl;
 
 import com.hmdp.ai.AgentTraceContext;
+import com.hmdp.ai.ChatContextRepository;
+import com.hmdp.ai.ContextCompressionService;
+import com.hmdp.ai.ConversationSummary;
 import com.hmdp.ai.LocalLifeAgentTools;
+import com.hmdp.ai.LongTermMemoryFact;
+import com.hmdp.ai.MemoryExtractionService;
+import com.hmdp.ai.TokenBudgetEstimator;
 import com.hmdp.ai.rag.LocalLifeRagService;
 import com.hmdp.config.AiProperties;
 import com.hmdp.dto.AgentExecutionPlan;
@@ -16,6 +22,7 @@ import com.hmdp.service.IAgentPlanningService;
 import com.hmdp.service.IAiKnowledgeService;
 import com.hmdp.service.IUserInfoService;
 import com.hmdp.utils.UserHolder;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClient;
@@ -31,7 +38,10 @@ import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.support.StaticListableBeanFactory;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -39,6 +49,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -73,7 +84,6 @@ class AiAgentServiceImplTest {
                 properties,
                 emptyProvider(),
                 toolCallbackProvider,
-                chatMemory,
                 knowledgeService,
                 planningService,
                 auditService,
@@ -81,7 +91,10 @@ class AiAgentServiceImplTest {
                 new StaticListableBeanFactory().getBeanProvider(org.springframework.ai.model.tool.ToolCallingManager.class),
                 new AgentTraceContext(),
                 localLifeAgentTools,
-                userInfoService
+                userInfoService,
+                null,
+                contextCompressionService(properties, chatMemory),
+                null
         );
 
         AiChatRequest request = new AiChatRequest();
@@ -133,7 +146,6 @@ class AiAgentServiceImplTest {
                 properties,
                 beanFactory.getBeanProvider(ChatClient.Builder.class),
                 toolCallbackProvider,
-                chatMemory,
                 knowledgeService,
                 planningService,
                 auditService,
@@ -141,7 +153,10 @@ class AiAgentServiceImplTest {
                 beanFactory.getBeanProvider(org.springframework.ai.model.tool.ToolCallingManager.class),
                 new AgentTraceContext(),
                 localLifeAgentTools,
-                userInfoService
+                userInfoService,
+                null,
+                contextCompressionService(properties, chatMemory),
+                null
         );
 
         UserDTO user = new UserDTO();
@@ -208,7 +223,6 @@ class AiAgentServiceImplTest {
                 properties,
                 emptyProvider(),
                 toolCallbackProvider,
-                chatMemory,
                 knowledgeService,
                 planningService,
                 auditService,
@@ -216,7 +230,10 @@ class AiAgentServiceImplTest {
                 new StaticListableBeanFactory().getBeanProvider(org.springframework.ai.model.tool.ToolCallingManager.class),
                 new AgentTraceContext(),
                 localLifeAgentTools,
-                userInfoService
+                userInfoService,
+                null,
+                contextCompressionService(properties, chatMemory),
+                null
         );
 
         UserDTO user = new UserDTO();
@@ -232,6 +249,149 @@ class AiAgentServiceImplTest {
         assertTrue(response.getToolTrace().stream().anyMatch(line -> line.contains("fallback_prefetch")));
     }
 
+    @Test
+    void shouldTriggerContextCompressionAfterTwentyPlusPrompts() {
+        AiProperties properties = new AiProperties();
+        properties.setEnabled(true);
+        properties.setKnowledgeEnabled(false);
+        properties.setRecursiveToolLoopEnabled(false);
+        properties.getContextCompression().setEnabled(true);
+        properties.getContextCompression().setRecentTurnPairs(3);
+        properties.getContextCompression().setSummaryTriggerMessageCount(10);
+        properties.getContextCompression().setSoftTokenBudget(220);
+        properties.getContextCompression().setHardTokenBudget(320);
+
+        IAiKnowledgeService knowledgeService = mock(IAiKnowledgeService.class);
+        IAgentPlanningService planningService = mock(IAgentPlanningService.class);
+        IAgentAuditService auditService = mock(IAgentAuditService.class);
+        LocalLifeRagService ragService = mock(LocalLifeRagService.class);
+        LocalLifeAgentTools localLifeAgentTools = mock(LocalLifeAgentTools.class);
+        IUserInfoService userInfoService = mock(IUserInfoService.class);
+        stubEmptyTools(localLifeAgentTools);
+        when(ragService.isReady()).thenReturn(false);
+        lenient().when(planningService.plan(anyString())).thenAnswer(invocation -> {
+            String message = invocation.getArgument(0, String.class);
+            AgentExecutionPlan plan = new AgentExecutionPlan();
+            plan.setIntent("recommendation");
+            plan.setUseKnowledge(false);
+            plan.setUseTools(false);
+            plan.setResponseStyle("concise");
+            plan.setReasoningFocus("compare_candidates");
+            plan.setPreferredTools(List.of());
+            if (message.contains("广州")) {
+                plan.setCity("广州市");
+            }
+            if (message.contains("正佳")) {
+                plan.setLocationHint("正佳广场");
+            }
+            if (message.contains("火锅")) {
+                plan.setExcludedCategories(List.of("火锅"));
+            }
+            if (message.contains("80")) {
+                plan.setBudgetMax(80L);
+            }
+            if (message.contains("两个人")) {
+                plan.setPartySize(2);
+            }
+            if (message.contains("安静") || message.contains("约会")) {
+                plan.setQualityPreference("安静,适合约会");
+            }
+            return plan;
+        });
+
+        FixedChatModel chatModel = new FixedChatModel("已收到，我会按你的条件继续推荐。");
+        StaticListableBeanFactory beanFactory = new StaticListableBeanFactory();
+        beanFactory.addBean("chatClientBuilder", ChatClient.builder(chatModel));
+
+        ToolCallbackProvider toolCallbackProvider = () -> new org.springframework.ai.tool.ToolCallback[0];
+        ChatMemory chatMemory = MessageWindowChatMemory.builder()
+                .chatMemoryRepository(new InMemoryChatMemoryRepository())
+                .maxMessages(80)
+                .build();
+        InMemoryChatContextRepository contextRepository = new InMemoryChatContextRepository();
+
+        AiAgentServiceImpl service = new AiAgentServiceImpl(
+                properties,
+                beanFactory.getBeanProvider(ChatClient.Builder.class),
+                toolCallbackProvider,
+                knowledgeService,
+                planningService,
+                auditService,
+                ragService,
+                beanFactory.getBeanProvider(org.springframework.ai.model.tool.ToolCallingManager.class),
+                new AgentTraceContext(),
+                localLifeAgentTools,
+                userInfoService,
+                null,
+                new ContextCompressionService(
+                        properties,
+                        chatMemory,
+                        contextRepository,
+                        new TokenBudgetEstimator(),
+                        new MemoryExtractionService(properties),
+                        beanFactory.getBeanProvider(ChatClient.Builder.class),
+                        new StaticListableBeanFactory().getBeanProvider(com.hmdp.ai.rag.DashScopeRerankService.class),
+                        new ObjectMapper()
+                ),
+                null
+        );
+
+        UserDTO user = new UserDTO();
+        user.setId(99L);
+        user.setNickName("pressure-user");
+        UserHolder.saveUser(user);
+
+        List<String> prompts = List.of(
+                "我在广州",
+                "想在天河这边找吃的",
+                "最好别太贵",
+                "预算控制在80以内",
+                "两个人吃",
+                "想安静一点",
+                "适合约会更好",
+                "不要火锅",
+                "可以偏海鲜一点",
+                "最好离正佳不要太远",
+                "评分高一点",
+                "环境好一点",
+                "不要太吵",
+                "如果有团购更好",
+                "人均别超80",
+                "我不想吃太辣",
+                "正佳附近优先",
+                "如果没有海鲜就简餐也行",
+                "但还是想适合约会",
+                "要安静",
+                "不要火锅和串串",
+                "那你继续按这些条件想"
+        );
+
+        AiChatResponse lastResponse = null;
+        boolean compressionTriggered = false;
+        boolean summaryHitObserved = false;
+        boolean memoryHitObserved = false;
+
+        for (String prompt : prompts) {
+            AiChatRequest request = new AiChatRequest();
+            request.setConversationId("stress-ctx");
+            request.setMessage(prompt);
+            lastResponse = service.chat(request);
+            compressionTriggered = compressionTriggered
+                    || lastResponse.getToolTrace().stream().anyMatch(line -> line.contains("summaryUpdated=true"));
+            summaryHitObserved = summaryHitObserved
+                    || lastResponse.getToolTrace().stream().anyMatch(line -> line.contains("summaryHits=") && !line.contains("summaryHits=0"));
+            memoryHitObserved = memoryHitObserved
+                    || lastResponse.getToolTrace().stream().anyMatch(line -> line.contains("longTermMemoryHits=") && !line.contains("longTermMemoryHits=0"));
+        }
+
+        assertTrue(compressionTriggered, "Expected summary compaction to trigger after 20+ prompts");
+        assertTrue(summaryHitObserved, "Expected compressed summary context to be injected");
+        assertTrue(memoryHitObserved, "Expected long-term memory facts to be injected");
+        assertTrue(lastResponse.getToolTrace().stream().anyMatch(line -> line.contains("tokensBefore=")));
+        assertTrue(contextRepository.loadConversationSummary("agent-session:99:stress-ctx").hasContent());
+        assertFalse(contextRepository.loadLongTermMemories(99L).isEmpty());
+    }
+
     private void stubEmptyTools(LocalLifeAgentTools localLifeAgentTools) {
         when(localLifeAgentTools.searchShops(anyString(), any(), anyInt())).thenReturn(List.of());
         when(localLifeAgentTools.getHotBlogs(anyInt())).thenReturn(List.of());
@@ -240,6 +400,19 @@ class AiAgentServiceImplTest {
 
     private ObjectProvider<ChatClient.Builder> emptyProvider() {
         return new StaticListableBeanFactory().getBeanProvider(ChatClient.Builder.class);
+    }
+
+    private ContextCompressionService contextCompressionService(AiProperties properties, ChatMemory chatMemory) {
+        return new ContextCompressionService(
+                properties,
+                chatMemory,
+                new InMemoryChatContextRepository(),
+                new TokenBudgetEstimator(),
+                new MemoryExtractionService(properties),
+                emptyProvider(),
+                new StaticListableBeanFactory().getBeanProvider(com.hmdp.ai.rag.DashScopeRerankService.class),
+                new ObjectMapper()
+        );
     }
 
     private static class FixedChatModel implements ChatModel {
@@ -254,6 +427,36 @@ class AiAgentServiceImplTest {
         public ChatResponse call(Prompt prompt) {
             this.lastPrompt = prompt;
             return new ChatResponse(List.of(new Generation(new AssistantMessage(answer))));
+        }
+    }
+
+    private static class InMemoryChatContextRepository implements ChatContextRepository {
+        private final Map<String, ConversationSummary> summaries = new LinkedHashMap<String, ConversationSummary>();
+        private final Map<Long, List<LongTermMemoryFact>> memories = new LinkedHashMap<Long, List<LongTermMemoryFact>>();
+
+        @Override
+        public ConversationSummary loadConversationSummary(String conversationId) {
+            return summaries.getOrDefault(conversationId, new ConversationSummary());
+        }
+
+        @Override
+        public void saveConversationSummary(String conversationId, ConversationSummary summary) {
+            summaries.put(conversationId, summary);
+        }
+
+        @Override
+        public void clearConversationSummary(String conversationId) {
+            summaries.remove(conversationId);
+        }
+
+        @Override
+        public List<LongTermMemoryFact> loadLongTermMemories(Long userId) {
+            return new ArrayList<LongTermMemoryFact>(memories.getOrDefault(userId, List.of()));
+        }
+
+        @Override
+        public void saveLongTermMemories(Long userId, List<LongTermMemoryFact> facts) {
+            memories.put(userId, new ArrayList<LongTermMemoryFact>(facts));
         }
     }
 }

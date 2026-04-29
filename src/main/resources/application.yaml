@@ -74,6 +74,18 @@ hmdp:
     enabled: ${AI_ENABLED:true}
     memory-turns: ${AI_MEMORY_TURNS:6}
     memory-ttl-hours: ${AI_MEMORY_TTL_HOURS:12}
+    context-compression:
+      enabled: ${AI_CONTEXT_COMPRESSION_ENABLED:true}
+      recent-turn-pairs: ${AI_CONTEXT_COMPRESSION_RECENT_TURN_PAIRS:4}
+      soft-token-budget: ${AI_CONTEXT_COMPRESSION_SOFT_TOKEN_BUDGET:5000}
+      hard-token-budget: ${AI_CONTEXT_COMPRESSION_HARD_TOKEN_BUDGET:6500}
+      summary-trigger-message-count: ${AI_CONTEXT_COMPRESSION_SUMMARY_TRIGGER_MESSAGE_COUNT:18}
+      summary-max-tokens: ${AI_CONTEXT_COMPRESSION_SUMMARY_MAX_TOKENS:1200}
+      long-term-memory-enabled: ${AI_CONTEXT_COMPRESSION_LONG_TERM_MEMORY_ENABLED:true}
+      memory-top-k: ${AI_CONTEXT_COMPRESSION_MEMORY_TOP_K:6}
+      summary-model: ${AI_CONTEXT_COMPRESSION_SUMMARY_MODEL:}
+      compression-model: ${AI_CONTEXT_COMPRESSION_COMPRESSION_MODEL:}
+      fact-min-confidence: ${AI_CONTEXT_COMPRESSION_FACT_MIN_CONFIDENCE:0.72}
     knowledge-enabled: ${AI_KNOWLEDGE_ENABLED:true}
     knowledge-top-k: ${AI_KNOWLEDGE_TOP_K:4}
     default-conversation-prefix: agent-session

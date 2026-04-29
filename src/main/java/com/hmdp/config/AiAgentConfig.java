@@ -1,8 +1,10 @@
 package com.hmdp.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.hmdp.ai.ChatContextRepository;
 import com.hmdp.ai.embedding.EmbeddingProviderFactory;
 import com.hmdp.ai.LocalLifeAgentTools;
+import com.hmdp.ai.RedisChatContextRepository;
 import com.hmdp.ai.RedisChatMemoryRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.memory.ChatMemory;
@@ -39,10 +41,26 @@ public class AiAgentConfig {
     @Bean
     public ChatMemory chatMemory(ChatMemoryRepository chatMemoryRepository, AiProperties aiProperties) {
         int maxMessages = Math.max(4, aiProperties.getMemoryTurns() * 2);
+        if (Boolean.TRUE.equals(aiProperties.getContextCompression().getEnabled())) {
+            int recent = Math.max(2, aiProperties.getContextCompression().getRecentTurnPairs() * 2);
+            int trigger = Math.max(recent, aiProperties.getContextCompression().getSummaryTriggerMessageCount());
+            maxMessages = Math.max(maxMessages, recent + trigger + 2);
+        }
         return MessageWindowChatMemory.builder()
                 .chatMemoryRepository(chatMemoryRepository)
                 .maxMessages(maxMessages)
                 .build();
+    }
+
+    @Bean
+    public ChatContextRepository chatContextRepository(StringRedisTemplate stringRedisTemplate,
+                                                       ObjectMapper objectMapper) {
+        return new RedisChatContextRepository(
+                stringRedisTemplate,
+                objectMapper,
+                "ai:agent:summary:",
+                "ai:agent:long-memory:"
+        );
     }
 
     @Bean

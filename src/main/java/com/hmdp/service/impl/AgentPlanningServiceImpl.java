@@ -3,6 +3,7 @@ package com.hmdp.service.impl;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONUtil;
 import com.hmdp.ai.LocationTextParser;
+import com.hmdp.ai.OpenAiCompatibleStreamBridge;
 import com.hmdp.config.AiProperties;
 import com.hmdp.dto.AgentExecutionPlan;
 import com.hmdp.entity.ShopSubCategory;
@@ -114,25 +115,25 @@ public class AgentPlanningServiceImpl implements IAgentPlanningService {
     private final ObjectProvider<ChatClient.Builder> chatClientBuilderProvider;
     private final LocationTextParser locationTextParser;
     private final IShopSubCategoryService shopSubCategoryService;
+    private final OpenAiCompatibleStreamBridge openAiCompatibleStreamBridge;
 
     @Autowired
     public AgentPlanningServiceImpl(AiProperties aiProperties,
                                     ObjectProvider<ChatClient.Builder> chatClientBuilderProvider,
                                     LocationTextParser locationTextParser,
-                                    ObjectProvider<IShopSubCategoryService> shopSubCategoryServiceProvider) {
+                                    ObjectProvider<IShopSubCategoryService> shopSubCategoryServiceProvider,
+                                    ObjectProvider<OpenAiCompatibleStreamBridge> streamBridgeProvider) {
         this.aiProperties = aiProperties;
         this.chatClientBuilderProvider = chatClientBuilderProvider;
         this.locationTextParser = locationTextParser;
         this.shopSubCategoryService = shopSubCategoryServiceProvider.getIfAvailable();
+        this.openAiCompatibleStreamBridge = streamBridgeProvider.getIfAvailable();
     }
 
     public AgentPlanningServiceImpl(AiProperties aiProperties,
                                     ObjectProvider<ChatClient.Builder> chatClientBuilderProvider,
                                     LocationTextParser locationTextParser) {
-        this.aiProperties = aiProperties;
-        this.chatClientBuilderProvider = chatClientBuilderProvider;
-        this.locationTextParser = locationTextParser;
-        this.shopSubCategoryService = null;
+        this(aiProperties, chatClientBuilderProvider, locationTextParser, new org.springframework.beans.factory.support.StaticListableBeanFactory().getBeanProvider(IShopSubCategoryService.class), new org.springframework.beans.factory.support.StaticListableBeanFactory().getBeanProvider(OpenAiCompatibleStreamBridge.class));
     }
 
     public AgentPlanningServiceImpl(AiProperties aiProperties,
@@ -154,16 +155,21 @@ public class AgentPlanningServiceImpl implements IAgentPlanningService {
         }
 
         try {
-            String content = builder.clone()
-                    .build()
-                    .prompt()
-                    .system(PLANNER_PROMPT)
-                    .user(message)
-                    .stream()
-                    .content()
-                    .reduce(new StringBuilder(), StringBuilder::append)
-                    .map(StringBuilder::toString)
-                    .block();
+            String content;
+            if (openAiCompatibleStreamBridge != null && openAiCompatibleStreamBridge.available()) {
+                content = openAiCompatibleStreamBridge.chat(PLANNER_PROMPT, message);
+            } else {
+                content = builder.clone()
+                        .build()
+                        .prompt()
+                        .system(PLANNER_PROMPT)
+                        .user(message)
+                        .stream()
+                        .content()
+                        .reduce(new StringBuilder(), StringBuilder::append)
+                        .map(StringBuilder::toString)
+                        .block();
+            }
             AgentExecutionPlan plan = parsePlan(content);
             return sanitize(plan, message);
         } catch (Exception e) {

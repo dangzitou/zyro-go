@@ -1,8 +1,11 @@
 package com.hmdp.service.impl;
 
 import cn.hutool.core.util.StrUtil;
+import com.hmdp.ai.AssembledChatContext;
 import com.hmdp.ai.AgentTraceContext;
+import com.hmdp.ai.ContextCompressionService;
 import com.hmdp.ai.LocalLifeAgentTools;
+import com.hmdp.ai.OpenAiCompatibleStreamBridge;
 import com.hmdp.ai.rag.BaiduMapGeoService;
 import com.hmdp.ai.rag.LocalLifeRagService;
 import com.hmdp.config.AiProperties;
@@ -25,10 +28,8 @@ import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.client.advisor.ToolCallAdvisor;
 import org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor;
-import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.model.tool.ToolCallingManager;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -71,7 +72,6 @@ public class AiAgentServiceImpl implements IAiAgentService {
     private final AiProperties aiProperties;
     private final ObjectProvider<ChatClient.Builder> chatClientBuilderProvider;
     private final ToolCallbackProvider toolCallbackProvider;
-    private final ChatMemory chatMemory;
     private final IAiKnowledgeService aiKnowledgeService;
     private final IAgentPlanningService agentPlanningService;
     private final IAgentAuditService agentAuditService;
@@ -81,12 +81,13 @@ public class AiAgentServiceImpl implements IAiAgentService {
     private final LocalLifeAgentTools localLifeAgentTools;
     private final IUserInfoService userInfoService;
     private final BaiduMapGeoService baiduMapGeoService;
+    private final ContextCompressionService contextCompressionService;
+    private final OpenAiCompatibleStreamBridge openAiCompatibleStreamBridge;
 
     @Autowired
     public AiAgentServiceImpl(AiProperties aiProperties,
                               ObjectProvider<ChatClient.Builder> chatClientBuilderProvider,
                               ToolCallbackProvider toolCallbackProvider,
-                              ChatMemory chatMemory,
                               IAiKnowledgeService aiKnowledgeService,
                               IAgentPlanningService agentPlanningService,
                               IAgentAuditService agentAuditService,
@@ -95,11 +96,12 @@ public class AiAgentServiceImpl implements IAiAgentService {
                               AgentTraceContext traceContext,
                               LocalLifeAgentTools localLifeAgentTools,
                               IUserInfoService userInfoService,
-                              BaiduMapGeoService baiduMapGeoService) {
+                              BaiduMapGeoService baiduMapGeoService,
+                              ContextCompressionService contextCompressionService,
+                              OpenAiCompatibleStreamBridge openAiCompatibleStreamBridge) {
         this.aiProperties = aiProperties;
         this.chatClientBuilderProvider = chatClientBuilderProvider;
         this.toolCallbackProvider = toolCallbackProvider;
-        this.chatMemory = chatMemory;
         this.aiKnowledgeService = aiKnowledgeService;
         this.agentPlanningService = agentPlanningService;
         this.agentAuditService = agentAuditService;
@@ -109,12 +111,13 @@ public class AiAgentServiceImpl implements IAiAgentService {
         this.localLifeAgentTools = localLifeAgentTools;
         this.userInfoService = userInfoService;
         this.baiduMapGeoService = baiduMapGeoService;
+        this.contextCompressionService = contextCompressionService;
+        this.openAiCompatibleStreamBridge = openAiCompatibleStreamBridge;
     }
 
     public AiAgentServiceImpl(AiProperties aiProperties,
                               ObjectProvider<ChatClient.Builder> chatClientBuilderProvider,
                               ToolCallbackProvider toolCallbackProvider,
-                              ChatMemory chatMemory,
                               IAiKnowledgeService aiKnowledgeService,
                               IAgentPlanningService agentPlanningService,
                               IAgentAuditService agentAuditService,
@@ -123,9 +126,9 @@ public class AiAgentServiceImpl implements IAiAgentService {
                               AgentTraceContext traceContext,
                               LocalLifeAgentTools localLifeAgentTools,
                               IUserInfoService userInfoService) {
-        this(aiProperties, chatClientBuilderProvider, toolCallbackProvider, chatMemory, aiKnowledgeService,
+        this(aiProperties, chatClientBuilderProvider, toolCallbackProvider, aiKnowledgeService,
                 agentPlanningService, agentAuditService, localLifeRagService, toolCallingManagerProvider,
-                traceContext, localLifeAgentTools, userInfoService, null);
+                traceContext, localLifeAgentTools, userInfoService, null, null, null);
     }
 
     @Override
@@ -168,10 +171,20 @@ public class AiAgentServiceImpl implements IAiAgentService {
             if (prefetched.hasData()) {
                 traceContext.record("prefetch_context(answerLines=" + prefetched.lineCount() + ")");
             }
+            String storageConversationId = storageConversationId(currentUser.getId(), clientConversationId);
+            AssembledChatContext assembledContext = assembleContext(
+                    storageConversationId,
+                    currentUser.getId(),
+                    request.getMessage().trim(),
+                    executionPlan,
+                    retrievalHits,
+                    prefetched.promptContext()
+            );
 
             ChatClient.Builder builder = chatClientBuilderProvider.getIfAvailable();
             if (builder == null) {
                 if (prefetched.hasData()) {
+                    traceContext.record("fallback_prefetch(reason=no_model)");
                     AiChatResponse response = new AiChatResponse(
                             clientConversationId,
                             prefetched.directAnswer(),
@@ -179,6 +192,7 @@ public class AiAgentServiceImpl implements IAiAgentService {
                             retrievalHits,
                             executionPlan
                     );
+                    recordTurnQuietly(storageConversationId, currentUser.getId(), request.getMessage().trim(), response.getAnswer(), executionPlan);
                     audit(currentUser, request, response, startedAt, "SUCCESS_WITH_PREFETCH_FALLBACK");
                     return response;
                 }
@@ -187,17 +201,21 @@ public class AiAgentServiceImpl implements IAiAgentService {
 
             ChatClient.ChatClientRequestSpec requestSpec = buildRequestSpec(
                     builder,
-                    storageConversationId(currentUser.getId(), clientConversationId),
                     request.getMessage().trim(),
                     executionPlan,
                     retrievalHits,
                     useKnowledge,
                     retrievalQuery,
                     topK,
-                    prefetched.promptContext()
+                    prefetched.promptContext(),
+                    assembledContext
             );
 
-            String answer = collectStreamContent(requestSpec);
+            String answer = collectStreamContent(
+                    requestSpec,
+                    buildSystemPrompt(executionPlan, retrievalHits, localLifeRagService.isReady() && useKnowledge, prefetched.promptContext(), assembledContext),
+                    request.getMessage().trim()
+            );
             if (StrUtil.isBlank(answer)) {
                 answer = prefetched.hasData()
                         ? prefetched.directAnswer()
@@ -211,12 +229,15 @@ public class AiAgentServiceImpl implements IAiAgentService {
                     retrievalHits,
                     executionPlan
             );
+            recordTurnQuietly(storageConversationId, currentUser.getId(), request.getMessage().trim(), response.getAnswer(), executionPlan);
             audit(currentUser, request, response, startedAt, "SUCCESS");
             return response;
         } catch (Exception e) {
             log.error("AI agent chat failed, conversationId={}", clientConversationId, e);
             PrefetchedToolContext prefetched = prefetchToolContext(request.getMessage(), executionPlan, currentUser);
+            String storageConversationId = storageConversationId(currentUser.getId(), clientConversationId);
             if (prefetched.hasData()) {
+                traceContext.record("fallback_prefetch(reason=exception)");
                 AiChatResponse response = new AiChatResponse(
                         clientConversationId,
                         prefetched.directAnswer(),
@@ -224,6 +245,7 @@ public class AiAgentServiceImpl implements IAiAgentService {
                         retrievalHits,
                         executionPlan
                 );
+                recordTurnQuietly(storageConversationId, currentUser.getId(), request.getMessage().trim(), response.getAnswer(), executionPlan);
                 audit(currentUser, request, response, startedAt, "SUCCESS_WITH_PREFETCH_FALLBACK");
                 return response;
             }
@@ -292,11 +314,20 @@ public class AiAgentServiceImpl implements IAiAgentService {
             if (prefetched.hasData()) {
                 traceContext.record("prefetch_context(answerLines=" + prefetched.lineCount() + ")");
             }
+            String storageConversationId = storageConversationId(currentUser.getId(), clientConversationId);
+            AssembledChatContext assembledContext = assembleContext(
+                    storageConversationId,
+                    currentUser.getId(),
+                    request.getMessage().trim(),
+                    executionPlan,
+                    retrievalHits,
+                    prefetched.promptContext()
+            );
 
             ChatClient.Builder builder = chatClientBuilderProvider.getIfAvailable();
             if (builder == null) {
                 if (prefetched.hasData()) {
-                    streamPlainAnswer(emitter, clientConversationId, prefetched.directAnswer(), retrievalHits, executionPlan, currentUser, request, startedAt);
+                    streamPlainAnswer(emitter, clientConversationId, storageConversationId, prefetched.directAnswer(), retrievalHits, executionPlan, currentUser, request, startedAt);
                     return emitter;
                 }
                 completeWithSingleEvent(emitter, "error", Map.of("message", "AI 模型尚未初始化，请检查 spring.ai.openai 配置。"));
@@ -306,14 +337,14 @@ public class AiAgentServiceImpl implements IAiAgentService {
 
             ChatClient.ChatClientRequestSpec requestSpec = buildRequestSpec(
                     builder,
-                    storageConversationId(currentUser.getId(), clientConversationId),
                     request.getMessage().trim(),
                     executionPlan,
                     retrievalHits,
                     useKnowledge,
                     retrievalQuery,
                     topK,
-                    prefetched.promptContext()
+                    prefetched.promptContext(),
+                    assembledContext
             );
 
             StringBuilder answerBuilder = new StringBuilder();
@@ -325,7 +356,7 @@ public class AiAgentServiceImpl implements IAiAgentService {
                     error -> {
                         log.error("AI agent stream failed, conversationId={}", clientConversationId, error);
                         if (prefetched.hasData()) {
-                            streamPlainAnswer(emitter, clientConversationId, prefetched.directAnswer(), retrievalHits, executionPlan, currentUser, request, startedAt);
+                            streamPlainAnswer(emitter, clientConversationId, storageConversationId, prefetched.directAnswer(), retrievalHits, executionPlan, currentUser, request, startedAt);
                             return;
                         }
                         sendEventQuietly(emitter, "error", Map.of("message", "流式调用失败，请稍后重试。"));
@@ -337,6 +368,7 @@ public class AiAgentServiceImpl implements IAiAgentService {
                     () -> {
                         String finalAnswer = StrUtil.blankToDefault(answerBuilder.toString(), prefetched.directAnswer());
                         AiChatResponse response = new AiChatResponse(clientConversationId, finalAnswer, traceContext.snapshot(), retrievalHits, executionPlan);
+                        recordTurnQuietly(storageConversationId, currentUser.getId(), request.getMessage().trim(), finalAnswer, executionPlan);
                         sendEventQuietly(emitter, "done", response);
                         audit(currentUser, request, response, startedAt, "SUCCESS");
                         traceContext.clear();
@@ -365,7 +397,10 @@ public class AiAgentServiceImpl implements IAiAgentService {
         if (currentUser == null) {
             return;
         }
-        chatMemory.clear(storageConversationId(currentUser.getId(), resolveClientConversationId(conversationId)));
+        String storageConversationId = storageConversationId(currentUser.getId(), resolveClientConversationId(conversationId));
+        if (contextCompressionService != null) {
+            contextCompressionService.clearConversation(storageConversationId);
+        }
     }
 
     private AgentExecutionPlan resolveExecutionPlan(String message) {
@@ -399,17 +434,17 @@ public class AiAgentServiceImpl implements IAiAgentService {
     }
 
     private ChatClient.ChatClientRequestSpec buildRequestSpec(ChatClient.Builder builder,
-                                                              String storageConversationId,
                                                               String message,
                                                               AgentExecutionPlan executionPlan,
                                                               List<AiRetrievalHit> retrievalHits,
                                                               boolean useKnowledge,
                                                               String retrievalQuery,
                                                               int topK,
-                                                              String prefetchedContext) {
+                                                              String prefetchedContext,
+                                                              AssembledChatContext assembledContext) {
         ChatClient.Builder chatClientBuilder = builder.clone()
                 .defaultToolCallbacks(toolCallbackProvider)
-                .defaultSystem(buildSystemPrompt(executionPlan, retrievalHits, localLifeRagService.isReady() && useKnowledge, prefetchedContext));
+                .defaultSystem(buildSystemPrompt(executionPlan, retrievalHits, localLifeRagService.isReady() && useKnowledge, prefetchedContext, assembledContext));
 
         ToolCallingManager toolCallingManager = toolCallingManagerProvider.getIfAvailable();
         if (toolCallingManager != null && Boolean.TRUE.equals(aiProperties.getRecursiveToolLoopEnabled())) {
@@ -422,13 +457,8 @@ public class AiAgentServiceImpl implements IAiAgentService {
         }
 
         ChatClient chatClient = chatClientBuilder.build();
-        MessageChatMemoryAdvisor memoryAdvisor = MessageChatMemoryAdvisor.builder(chatMemory)
-                .conversationId(storageConversationId)
-                .build();
-
         ChatClient.ChatClientRequestSpec requestSpec = chatClient.prompt()
-                .user(message)
-                .advisors(memoryAdvisor);
+                .user(message);
 
         if (useKnowledge) {
             QuestionAnswerAdvisor questionAnswerAdvisor = localLifeRagService.buildAdvisor(retrievalQuery, topK);
@@ -446,7 +476,8 @@ public class AiAgentServiceImpl implements IAiAgentService {
     private String buildSystemPrompt(AgentExecutionPlan executionPlan,
                                      List<AiRetrievalHit> retrievalHits,
                                      boolean ragAdvisorEnabled,
-                                     String prefetchedContext) {
+                                     String prefetchedContext,
+                                     AssembledChatContext assembledContext) {
         StringBuilder builder = new StringBuilder(SYSTEM_PROMPT);
         if (executionPlan != null) {
             builder.append("\nCurrent plan: intent=")
@@ -464,6 +495,10 @@ public class AiAgentServiceImpl implements IAiAgentService {
             builder.append("\nPrefetched business facts:\n")
                     .append(prefetchedContext)
                     .append("\nUse these facts directly, and organize them into a concise Chinese answer.");
+        }
+        if (assembledContext != null && StrUtil.isNotBlank(assembledContext.getPromptContext())) {
+            builder.append("\nCompressed conversation context:\n")
+                    .append(assembledContext.getPromptContext());
         }
         if (ragAdvisorEnabled) {
             builder.append("\nRAG is enabled for background context. Dynamic facts should still follow business data.");
@@ -857,6 +892,7 @@ public class AiAgentServiceImpl implements IAiAgentService {
 
     private void streamPlainAnswer(SseEmitter emitter,
                                    String conversationId,
+                                   String storageConversationId,
                                    String answer,
                                    List<AiRetrievalHit> retrievalHits,
                                    AgentExecutionPlan executionPlan,
@@ -869,6 +905,8 @@ public class AiAgentServiceImpl implements IAiAgentService {
                 sendEvent(emitter, "chunk", Map.of("content", chunk));
             }
             AiChatResponse response = new AiChatResponse(conversationId, answer, traceContext.snapshot(), retrievalHits, executionPlan);
+            recordTurnQuietly(storageConversationId, currentUser == null ? null : currentUser.getId(),
+                    request == null ? null : request.getMessage(), answer, executionPlan);
             sendEvent(emitter, "done", response);
             audit(currentUser, request, response, startedAt, "SUCCESS");
         } catch (IOException e) {
@@ -949,13 +987,70 @@ public class AiAgentServiceImpl implements IAiAgentService {
         emitter.send(SseEmitter.event().name(event).data(data));
     }
 
-    private String collectStreamContent(ChatClient.ChatClientRequestSpec requestSpec) {
-        String content = requestSpec.stream()
-                .content()
-                .reduce(new StringBuilder(), StringBuilder::append)
-                .map(StringBuilder::toString)
-                .block();
-        return content == null ? "" : content;
+    private String collectStreamContent(ChatClient.ChatClientRequestSpec requestSpec,
+                                        String systemPrompt,
+                                        String userPrompt) {
+        try {
+            String content = requestSpec.stream()
+                    .content()
+                    .reduce(new StringBuilder(), StringBuilder::append)
+                    .map(StringBuilder::toString)
+                    .block();
+            return content == null ? "" : content;
+        } catch (Exception ex) {
+            if (openAiCompatibleStreamBridge != null && openAiCompatibleStreamBridge.available()) {
+                traceContext.record("llm_stream_bridge_fallback(reason=" + ex.getClass().getSimpleName() + ")");
+                String content = openAiCompatibleStreamBridge.chat(systemPrompt, userPrompt);
+                return content == null ? "" : content;
+            }
+            if (ex instanceof UnsupportedOperationException) {
+                String content = requestSpec.call().content();
+                return content == null ? "" : content;
+            }
+            throw ex;
+        }
+    }
+
+    private AssembledChatContext assembleContext(String storageConversationId,
+                                                 Long userId,
+                                                 String message,
+                                                 AgentExecutionPlan executionPlan,
+                                                 List<AiRetrievalHit> retrievalHits,
+                                                 String prefetchedContext) {
+        if (contextCompressionService == null) {
+            return AssembledChatContext.empty();
+        }
+        AssembledChatContext context = contextCompressionService.assemble(
+                storageConversationId,
+                userId,
+                message,
+                executionPlan,
+                SYSTEM_PROMPT,
+                prefetchedContext,
+                retrievalHits
+        );
+        traceContext.record("context_compression(recentTurns=" + context.getRecentTurnCount()
+                + ", summaryHits=" + context.getSummaryHitCount()
+                + ", longTermMemoryHits=" + context.getLongTermMemoryHitCount()
+                + ", tokensBefore=" + context.getEstimatedTokensBefore()
+                + ", tokensAfter=" + context.getEstimatedTokensAfter()
+                + ", summaryUpdated=" + context.isSummaryUpdated() + ")");
+        return context;
+    }
+
+    private void recordTurnQuietly(String storageConversationId,
+                                   Long userId,
+                                   String message,
+                                   String answer,
+                                   AgentExecutionPlan executionPlan) {
+        if (contextCompressionService == null || StrUtil.isBlank(storageConversationId)) {
+            return;
+        }
+        try {
+            contextCompressionService.recordTurn(storageConversationId, userId, message, answer, executionPlan);
+        } catch (Exception e) {
+            log.debug("Failed to record conversation turn for {}", storageConversationId, e);
+        }
     }
 
     private record PrefetchedToolContext(String promptContext, String directAnswer, int lineCount) {
