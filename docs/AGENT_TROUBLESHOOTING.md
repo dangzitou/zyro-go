@@ -264,3 +264,49 @@
 4. 你如何验证修复真的生效
 
 这比单纯说“我会用 Spring AI / RAG / Tool Calling”更有说服力。
+## 14. Context engineering v2 related troubleshooting
+
+### Symptom: long conversations start to feel "forgetful"
+
+Check:
+
+- whether `context_compression(...)` trace shows `summaryUpdated=true`
+- whether `summaryHits` and `longTermMemoryHits` are still non-zero
+- whether `droppedContextKinds` is repeatedly removing useful summary slices
+
+Likely causes:
+
+- hard token budget too small for the current prompt shape
+- planner outputs too much dynamic context in one round
+- memory facts are expiring faster than expected
+
+### Symptom: old recommendation payloads keep polluting later turns
+
+Check:
+
+- whether `microCompactTriggered=true`
+- whether `microCompactedItems` contains folded recommendation/history markers
+
+If not:
+
+- verify `hmdp.ai.context-compression.micro-compact-enabled=true`
+- inspect whether the oversized historical text still matches the current
+  micro-compact heuristics
+
+### Symptom: a stored preference is clearly wrong for the current turn
+
+Check:
+
+- whether the old fact should now be expired
+- whether it conflicts with this turn's `excludedCategories` or
+  `negativePreferences`
+- whether the trace still shows that memory fact in `memoryKinds`
+
+The intended behavior is:
+
+- current-turn hard constraints override stale or conflicting history
+- long-term memory should help continuity, not fight the current request
+
+Reference:
+
+- [CONTEXT_ENGINEERING_V2.md](./CONTEXT_ENGINEERING_V2.md)

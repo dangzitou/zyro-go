@@ -153,3 +153,54 @@
 
 推荐回答：
 > 这轮我不是在继续堆 AI 名词，而是把 Agent 的语义理解、事实边界和模型调用链真正打磨成了一个更可控、更稳定、也更适合企业业务落地的系统。
+## 15. How to explain the context engineering upgrade
+
+Recommended answer:
+> This round I did not add another flashy agent feature. I upgraded the
+> context pipeline itself. The previous version already had recent turns,
+> rolling summary, long-term memory, and token estimation. The problem is that
+> long conversations still tend to bloat, stale tool payloads can crowd out
+> fresh constraints, and memory can drift. So I introduced a second-generation
+> context engineering design: zero-cost `MicroCompact`, governed long-term
+> memory, and budget-driven context assembly.
+
+### What is the business value?
+
+Recommended answer:
+> In enterprise agents, the most expensive bugs are often not model IQ bugs.
+> They are context bugs: the model sees too much stale history, loses hard
+> constraints, or gets polluted by old tool results. This upgrade reduces those
+> failures without tying the system to one provider.
+
+### What did you implement concretely?
+
+Recommended answer:
+> I added a `MicroCompact` stage before summary generation, so stale oversized
+> historical recommendation payloads are folded into placeholders instead of
+> staying in full text forever. I upgraded long-term memory to carry
+> `memoryClass`, `expiresAt`, and `stale`, and filtered memory facts against
+> the current turn so expired or conflicting preferences are not injected. I
+> also changed context assembly from append-and-trim to fixed-priority
+> budgeting, and refactored system prompt building into internal prompt blocks.
+
+### How did you verify it?
+
+Recommended answer:
+> I verified it in three layers: compile validation, targeted unit/integration
+> tests, and long multi-turn regression. The targeted test command I used was
+> `mvn -q "-Dtest=ContextCompressionServiceTest,MemoryExtractionServiceTest,AiAgentServiceImplTest" test`.
+> Those tests cover long conversations, memory expiry/conflict filtering,
+> browser geolocation injection, and compression trace visibility.
+
+### Why not copy Claude Code exactly?
+
+Recommended answer:
+> Claude Code is a general-purpose coding agent. My project is a vertical
+> local-life recommendation agent with strong business constraints. So I
+> borrowed the useful ideas like micro-compaction, memory governance, and
+> prompt-block thinking, but I did not copy provider-specific prompt caching or
+> generic project memory semantics that do not fit this business domain.
+
+Reference:
+
+- [CONTEXT_ENGINEERING_V2.md](./CONTEXT_ENGINEERING_V2.md)

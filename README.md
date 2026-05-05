@@ -630,11 +630,36 @@ src/main/java/com/hmdp
 
 ### Documentation
 
+- [Context Engineering v2](docs/CONTEXT_ENGINEERING_V2.md)
 - [Architecture](docs/AGENT_ARCHITECTURE.md)
 - [API](docs/AGENT_API.md)
 - [Interview Notes](docs/AI_AGENT_INTERVIEW_PREP.md)
 - [Troubleshooting](docs/AGENT_TROUBLESHOOTING.md)
 - [Docs Index](docs/README.md)
+
+### Latest Update
+
+The latest backend upgrade focuses on context engineering rather than adding
+more agent surface area.
+
+Highlights:
+
+- added `MicroCompact` before summary compaction so stale recommendation payloads
+  and oversized historical tool results stop polluting the prompt
+- upgraded long-term memory with `memoryClass`, `expiresAt`, and `stale`
+  governance so memory injection is filtered, expirable, and conflict-aware
+- changed context assembly to be budget-driven and priority-based instead of
+  simple append-and-trim
+- split system prompt assembly into internal prompt blocks while keeping the
+  external Spring AI call path unchanged
+- improved trace visibility for context debugging with
+  `microCompactTriggered`, `microCompactedItems`, `summaryKinds`,
+  `memoryKinds`, and `droppedContextKinds`
+
+Verification:
+
+- `mvn -q -DskipTests compile`
+- `mvn -q "-Dtest=ContextCompressionServiceTest,MemoryExtractionServiceTest,AiAgentServiceImplTest" test`
 
 ## License
 

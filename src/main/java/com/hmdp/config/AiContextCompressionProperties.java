@@ -36,6 +36,16 @@ public class AiContextCompressionProperties {
     private Integer summaryMaxTokens = 1200;
 
     /**
+     * Whether zero-cost micro compaction is enabled before summary generation.
+     */
+    private Boolean microCompactEnabled = true;
+
+    /**
+     * Number of most recent raw turns that should never be micro-compacted.
+     */
+    private Integer microCompactKeepRecentToolRounds = 2;
+
+    /**
      * Whether stable user memory facts are enabled.
      */
     private Boolean longTermMemoryEnabled = true;
@@ -59,4 +69,19 @@ public class AiContextCompressionProperties {
      * Minimum confidence required for long-term memory persistence.
      */
     private Double factMinConfidence = 0.72D;
+
+    /**
+     * Max number of summarized tool outcomes retained in the rolling summary.
+     */
+    private Integer summaryToolOutcomeLimit = 4;
+
+    /**
+     * Max number of summarized RAG takeaways retained in the rolling summary.
+     */
+    private Integer summaryRagTakeawayLimit = 3;
+
+    /**
+     * Default expiry days for weaker memory facts.
+     */
+    private Integer memoryExpiryDays = 30;
 }

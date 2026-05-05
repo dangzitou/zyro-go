@@ -18,7 +18,6 @@ import com.hmdp.dto.AiRetrievalHit;
 import com.hmdp.dto.ShopRecommendationDTO;
 import com.hmdp.dto.ShopRecommendationQuery;
 import com.hmdp.dto.UserDTO;
-import com.hmdp.entity.UserInfo;
 import com.hmdp.service.IAgentAuditService;
 import com.hmdp.service.IAgentPlanningService;
 import com.hmdp.service.IAiAgentService;
@@ -69,6 +68,10 @@ public class AiAgentServiceImpl implements IAiAgentService {
             "不贵", "便宜", "平价", "实惠", "划算", "性价比高", "学生党"
     };
 
+    private static final String[] CURRENT_LOCATION_CUES = {
+            "我现在在哪", "我现在哪里", "我现在的位置", "我当前位置", "我的位置", "当前位置", "当前地址", "我在哪"
+    };
+
     private final AiProperties aiProperties;
     private final ObjectProvider<ChatClient.Builder> chatClientBuilderProvider;
     private final ToolCallbackProvider toolCallbackProvider;
@@ -79,7 +82,6 @@ public class AiAgentServiceImpl implements IAiAgentService {
     private final ObjectProvider<ToolCallingManager> toolCallingManagerProvider;
     private final AgentTraceContext traceContext;
     private final LocalLifeAgentTools localLifeAgentTools;
-    private final IUserInfoService userInfoService;
     private final BaiduMapGeoService baiduMapGeoService;
     private final ContextCompressionService contextCompressionService;
     private final OpenAiCompatibleStreamBridge openAiCompatibleStreamBridge;
@@ -95,7 +97,7 @@ public class AiAgentServiceImpl implements IAiAgentService {
                               ObjectProvider<ToolCallingManager> toolCallingManagerProvider,
                               AgentTraceContext traceContext,
                               LocalLifeAgentTools localLifeAgentTools,
-                              IUserInfoService userInfoService,
+                              IUserInfoService unusedUserInfoService,
                               BaiduMapGeoService baiduMapGeoService,
                               ContextCompressionService contextCompressionService,
                               OpenAiCompatibleStreamBridge openAiCompatibleStreamBridge) {
@@ -109,7 +111,6 @@ public class AiAgentServiceImpl implements IAiAgentService {
         this.toolCallingManagerProvider = toolCallingManagerProvider;
         this.traceContext = traceContext;
         this.localLifeAgentTools = localLifeAgentTools;
-        this.userInfoService = userInfoService;
         this.baiduMapGeoService = baiduMapGeoService;
         this.contextCompressionService = contextCompressionService;
         this.openAiCompatibleStreamBridge = openAiCompatibleStreamBridge;
@@ -125,10 +126,10 @@ public class AiAgentServiceImpl implements IAiAgentService {
                               ObjectProvider<ToolCallingManager> toolCallingManagerProvider,
                               AgentTraceContext traceContext,
                               LocalLifeAgentTools localLifeAgentTools,
-                              IUserInfoService userInfoService) {
+                              IUserInfoService unusedUserInfoService) {
         this(aiProperties, chatClientBuilderProvider, toolCallbackProvider, aiKnowledgeService,
                 agentPlanningService, agentAuditService, localLifeRagService, toolCallingManagerProvider,
-                traceContext, localLifeAgentTools, userInfoService, null, null, null);
+                traceContext, localLifeAgentTools, unusedUserInfoService, null, null, null);
     }
 
     @Override
@@ -167,7 +168,7 @@ public class AiAgentServiceImpl implements IAiAgentService {
         }
 
         try {
-            PrefetchedToolContext prefetched = prefetchToolContext(request.getMessage(), executionPlan, currentUser);
+            PrefetchedToolContext prefetched = prefetchToolContext(request, executionPlan, currentUser);
             if (prefetched.hasData()) {
                 traceContext.record("prefetch_context(answerLines=" + prefetched.lineCount() + ")");
             }
@@ -234,7 +235,7 @@ public class AiAgentServiceImpl implements IAiAgentService {
             return response;
         } catch (Exception e) {
             log.error("AI agent chat failed, conversationId={}", clientConversationId, e);
-            PrefetchedToolContext prefetched = prefetchToolContext(request.getMessage(), executionPlan, currentUser);
+            PrefetchedToolContext prefetched = prefetchToolContext(request, executionPlan, currentUser);
             String storageConversationId = storageConversationId(currentUser.getId(), clientConversationId);
             if (prefetched.hasData()) {
                 traceContext.record("fallback_prefetch(reason=exception)");
@@ -310,7 +311,7 @@ public class AiAgentServiceImpl implements IAiAgentService {
                     "retrievalHits", retrievalHits
             ));
 
-            PrefetchedToolContext prefetched = prefetchToolContext(request.getMessage(), executionPlan, currentUser);
+            PrefetchedToolContext prefetched = prefetchToolContext(request, executionPlan, currentUser);
             if (prefetched.hasData()) {
                 traceContext.record("prefetch_context(answerLines=" + prefetched.lineCount() + ")");
             }
@@ -502,18 +503,16 @@ public class AiAgentServiceImpl implements IAiAgentService {
             return Collections.emptyList();
         }
         List<String> tools = new ArrayList<String>(executionPlan.getPreferredTools());
-        if (hasPrefetchedCurrentUserLocation(prefetchedContext)) {
-            // The location tool has already been executed on the authenticated request thread.
-            // Do not let an async model tool call repeat it and lose UserHolder in a Reactor worker.
-            tools.remove("get_current_user_location");
-        }
+        // Current-user location is always prefetched on the authenticated request thread.
+        // Do not let an async model tool call repeat it and lose UserHolder in a Reactor worker.
+        tools.remove("get_current_user_location");
         return tools;
     }
 
     private boolean hasPrefetchedCurrentUserLocation(String prefetchedContext) {
         return StrUtil.isNotBlank(prefetchedContext)
-                && (prefetchedContext.contains("current_user_location:")
-                || prefetchedContext.contains("current_user_profile_address:"));
+                && prefetchedContext.contains("current_user_location:")
+                && prefetchedContext.contains("longitude=");
     }
 
     private String buildSystemPrompt(AgentExecutionPlan executionPlan,
@@ -521,48 +520,72 @@ public class AiAgentServiceImpl implements IAiAgentService {
                                      boolean ragAdvisorEnabled,
                                      String prefetchedContext,
                                      AssembledChatContext assembledContext) {
-        StringBuilder builder = new StringBuilder(SYSTEM_PROMPT);
+        StringBuilder builder = new StringBuilder();
+        for (PromptBlock block : buildSystemPromptBlocks(executionPlan, retrievalHits, ragAdvisorEnabled, prefetchedContext, assembledContext)) {
+            if (StrUtil.isBlank(block.content())) {
+                continue;
+            }
+            if (builder.length() > 0) {
+                builder.append("\n");
+            }
+            builder.append(block.content());
+        }
+        return builder.toString();
+    }
+
+    private List<PromptBlock> buildSystemPromptBlocks(AgentExecutionPlan executionPlan,
+                                                      List<AiRetrievalHit> retrievalHits,
+                                                      boolean ragAdvisorEnabled,
+                                                      String prefetchedContext,
+                                                      AssembledChatContext assembledContext) {
+        List<PromptBlock> blocks = new ArrayList<PromptBlock>();
+        blocks.add(new PromptBlock("static_rules", SYSTEM_PROMPT));
+
+        StringBuilder plannerBlock = new StringBuilder();
         if (executionPlan != null) {
-            builder.append("\nCurrent plan: intent=")
+            plannerBlock.append("Current plan: intent=")
                     .append(StrUtil.blankToDefault(executionPlan.getIntent(), "general"))
                     .append(", responseStyle=")
                     .append(StrUtil.blankToDefault(executionPlan.getResponseStyle(), "concise"))
                     .append(", reasoningFocus=")
                     .append(StrUtil.blankToDefault(executionPlan.getReasoningFocus(), "grounded_facts"));
             if (executionPlan.getPreferredTools() != null && !executionPlan.getPreferredTools().isEmpty()) {
-                builder.append(", preferredTools=").append(executionPlan.getPreferredTools());
+                plannerBlock.append(", preferredTools=").append(executionPlan.getPreferredTools());
             }
-            builder.append(".");
+            plannerBlock.append(".");
             if (Boolean.TRUE.equals(executionPlan.getNearby())
                     && StrUtil.isBlank(executionPlan.getCity())
                     && StrUtil.isBlank(executionPlan.getLocationHint())) {
                 if (hasPrefetchedCurrentUserLocation(prefetchedContext)) {
-                    builder.append("\nThe current user location has already been prefetched below. Use those coordinates for nearby recommendation and do not call get_current_user_location again.");
+                    plannerBlock.append("\nThe current user location has already been prefetched below. Use those coordinates directly for nearby recommendation.");
                 } else {
-                    builder.append("\nWhen the user says nearby / around here without an explicit place, call get_current_user_location first, then use the returned coordinates for shop recommendation.");
+                    plannerBlock.append("\nWhen the user says nearby / around here without an explicit place, rely on prefetched browser geolocation if it is present below.");
                 }
             }
         }
+        blocks.add(new PromptBlock("planner", plannerBlock.toString()));
+
         if (StrUtil.isNotBlank(prefetchedContext)) {
-            builder.append("\nPrefetched business facts:\n")
-                    .append(prefetchedContext)
-                    .append("\nUse these facts directly, and organize them into a concise Chinese answer.");
+            blocks.add(new PromptBlock("prefetched_context",
+                    "Prefetched business facts:\n" + prefetchedContext
+                            + "\nUse these facts directly, and organize them into a concise Chinese answer."));
         }
         if (assembledContext != null && StrUtil.isNotBlank(assembledContext.getPromptContext())) {
-            builder.append("\nCompressed conversation context:\n")
-                    .append(assembledContext.getPromptContext());
+            blocks.add(new PromptBlock("compressed_context",
+                    "Compressed conversation context:\n" + assembledContext.getPromptContext()));
         }
         if (ragAdvisorEnabled) {
-            builder.append("\nRAG is enabled for background context. Dynamic facts should still follow business data.");
-            return builder.toString();
+            blocks.add(new PromptBlock("rag_boundary",
+                    "RAG is enabled for background context. Dynamic facts should still follow business data."));
+            return blocks;
         }
         if (retrievalHits == null || retrievalHits.isEmpty()) {
-            return builder.toString();
+            return blocks;
         }
-        builder.append("\nBackground knowledge snippets:\n");
+        StringBuilder knowledgeBlock = new StringBuilder("Background knowledge snippets:\n");
         int index = 1;
         for (AiRetrievalHit hit : retrievalHits) {
-            builder.append(index++)
+            knowledgeBlock.append(index++)
                     .append(". [")
                     .append(hit.getSourceType())
                     .append("#")
@@ -575,21 +598,26 @@ public class AiAgentServiceImpl implements IAiAgentService {
                     .append(hit.getSnippet())
                     .append("\n");
         }
-        return builder.toString();
+        blocks.add(new PromptBlock("knowledge_snippets", knowledgeBlock.toString().trim()));
+        return blocks;
     }
 
-    private PrefetchedToolContext prefetchToolContext(String message, AgentExecutionPlan executionPlan, UserDTO currentUser) {
-        if (!Boolean.TRUE.equals(executionPlan.getUseTools())
+    private PrefetchedToolContext prefetchToolContext(AiChatRequest request, AgentExecutionPlan executionPlan, UserDTO currentUser) {
+        String message = request == null ? "" : StrUtil.blankToDefault(request.getMessage(), "");
+        boolean currentLocationQuestion = isCurrentLocationQuestion(message);
+        if (!currentLocationQuestion && (!Boolean.TRUE.equals(executionPlan.getUseTools())
                 || executionPlan.getPreferredTools() == null
-                || executionPlan.getPreferredTools().isEmpty()) {
+                || executionPlan.getPreferredTools().isEmpty())) {
             return PrefetchedToolContext.empty();
         }
 
         boolean couponOnly = containsAny(message.toLowerCase(Locale.ROOT), "优惠", "券", "折扣", "coupon", "discount");
         boolean nearbyRequested = Boolean.TRUE.equals(executionPlan.getNearby())
                 || containsAny(message.toLowerCase(Locale.ROOT), "附近", "周边", "nearby");
-        List<String> preferredTools = executionPlan.getPreferredTools();
-        UserLocationContext userLocation = resolvePrefetchedUserLocation(currentUser, preferredTools, nearbyRequested);
+        List<String> preferredTools = executionPlan.getPreferredTools() == null
+                ? Collections.emptyList()
+                : executionPlan.getPreferredTools();
+        UserLocationContext userLocation = resolveRequestUserLocation(request, preferredTools, nearbyRequested, currentLocationQuestion);
         Double effectiveX = userLocation.longitude();
         Double effectiveY = userLocation.latitude();
         BaiduMapGeoService.GeoPoint explicitGeoPoint = resolveExplicitGeoPoint(executionPlan, userLocation);
@@ -609,9 +637,9 @@ public class AiAgentServiceImpl implements IAiAgentService {
 
         List<String> contextLines = new ArrayList<String>();
         StringBuilder answer = new StringBuilder();
-        appendUserLocationContext(contextLines, executionPlan, userLocation, explicitGeoPoint, nearbyRequested);
+        appendUserLocationContext(contextLines, executionPlan, userLocation, explicitGeoPoint, nearbyRequested, currentLocationQuestion);
 
-        if (preferredTools.contains("recommend_shops")) {
+        if (preferredTools.contains("recommend_shops") || preferredTools.contains("recommend_nearby_shops")) {
             List<ShopRecommendationDTO> recommendations = localLifeAgentTools.recommendShops(recommendationQuery);
             if (!recommendations.isEmpty()) {
                 int index = 1;
@@ -718,54 +746,39 @@ public class AiAgentServiceImpl implements IAiAgentService {
         return PrefetchedToolContext.empty();
     }
 
-    private UserLocationContext resolvePrefetchedUserLocation(UserDTO currentUser,
-                                                              List<String> preferredTools,
-                                                              boolean nearbyRequested) {
+    private UserLocationContext resolveRequestUserLocation(AiChatRequest request,
+                                                           List<String> preferredTools,
+                                                           boolean nearbyRequested,
+                                                           boolean currentLocationQuestion) {
         boolean shouldCallLocationTool = nearbyRequested
+                || currentLocationQuestion
                 || (preferredTools != null && preferredTools.contains("get_current_user_location"));
-        if (shouldCallLocationTool) {
-            LocalLifeAgentTools.UserLocationCard card = localLifeAgentTools.getCurrentUserLocation();
-            if (card != null && Boolean.TRUE.equals(card.available())) {
-                return new UserLocationContext(card.city(), card.address(), card.longitude(), card.latitude());
-            }
-            UserLocationContext fallback = loadUserLocationContext(currentUser);
-            if (fallback.available()) {
-                traceContext.record("get_current_user_location_prefetch_fallback(userId="
-                        + (currentUser == null ? "-" : currentUser.getId())
-                        + ") -> available=true");
-                return fallback;
-            }
-            if (card != null && StrUtil.isNotBlank(card.address())) {
-                return new UserLocationContext(card.city(), card.address(), card.longitude(), card.latitude());
-            }
-            return fallback;
-        }
-        return loadUserLocationContext(currentUser);
-    }
-
-    private UserLocationContext loadUserLocationContext(UserDTO currentUser) {
-        if (currentUser == null || currentUser.getId() == null) {
+        if (!shouldCallLocationTool) {
             return UserLocationContext.empty();
         }
-        UserInfo userInfo = userInfoService.getById(currentUser.getId());
-        if (userInfo == null) {
+        if (request == null || request.getCurrentLocation() == null) {
+            traceContext.record("request_user_location() -> missing");
             return UserLocationContext.empty();
         }
-        if ((userInfo.getLocationX() == null || userInfo.getLocationY() == null)
-                && baiduMapGeoService != null
-                && StrUtil.isNotBlank(userInfo.getAddress())) {
-            BaiduMapGeoService.GeoPoint profileGeo = baiduMapGeoService.geocodeAddress(userInfo.getCity(), userInfo.getAddress());
-            if (profileGeo != null) {
-                userInfo.setLocationX(profileGeo.lng());
-                userInfo.setLocationY(profileGeo.lat());
-                userInfoService.updateById(userInfo);
-            }
+        AiChatRequest.BrowserLocation currentLocation = request.getCurrentLocation();
+        if (currentLocation.getLongitude() == null || currentLocation.getLatitude() == null) {
+            traceContext.record("request_user_location() -> incomplete");
+            return UserLocationContext.empty();
         }
+        BaiduMapGeoService.ReverseGeoPoint reverseGeoPoint = baiduMapGeoService == null
+                ? null
+                : baiduMapGeoService.reverseGeocode(currentLocation.getLongitude(), currentLocation.getLatitude());
+        traceContext.record("request_user_location() -> available=true, longitude="
+                + safe(currentLocation.getLongitude()) + ", latitude=" + safe(currentLocation.getLatitude())
+                + ", accuracyMeters=" + safe(currentLocation.getAccuracyMeters())
+                + ", city=" + safe(reverseGeoPoint == null ? null : reverseGeoPoint.city())
+                + ", address=" + safe(resolveReverseGeoAddress(reverseGeoPoint)));
         return new UserLocationContext(
-                userInfo.getCity(),
-                userInfo.getAddress(),
-                userInfo.getLocationX(),
-                userInfo.getLocationY()
+                reverseGeoPoint == null ? null : reverseGeoPoint.city(),
+                resolveReverseGeoAddress(reverseGeoPoint),
+                currentLocation.getLongitude(),
+                currentLocation.getLatitude(),
+                currentLocation.getAccuracyMeters()
         );
     }
 
@@ -773,21 +786,26 @@ public class AiAgentServiceImpl implements IAiAgentService {
                                            AgentExecutionPlan executionPlan,
                                            UserLocationContext userLocation,
                                            BaiduMapGeoService.GeoPoint explicitGeoPoint,
-                                           boolean nearbyRequested) {
+                                           boolean nearbyRequested,
+                                           boolean currentLocationQuestion) {
         if (contextLines == null) {
             return;
         }
         if (userLocation.available()) {
-            contextLines.add("current_user_location: city=" + safe(userLocation.city())
+            contextLines.add("current_user_location: source=browser_geolocation"
+                    + ", city=" + safe(userLocation.city())
                     + ", address=" + safe(userLocation.address())
                     + ", longitude=" + safe(userLocation.longitude())
-                    + ", latitude=" + safe(userLocation.latitude()));
+                    + ", latitude=" + safe(userLocation.latitude())
+                    + ", accuracyMeters=" + safe(userLocation.accuracyMeters()));
             if (nearbyRequested) {
-                contextLines.add("location_instruction: when nearby intent has no explicit place, use current_user_location coordinates first.");
+                contextLines.add("location_instruction: use current_user_location browser coordinates first for nearby recommendation.");
             }
-        } else if (StrUtil.isNotBlank(userLocation.address())) {
-            contextLines.add("current_user_profile_address: city=" + safe(userLocation.city())
-                    + ", address=" + safe(userLocation.address()));
+            if (currentLocationQuestion) {
+                contextLines.add("current_location_answer_instruction: the user is asking where they are now. Answer directly from current_user_location city/address/coordinates if present, and do not say the address is missing when it is already provided here.");
+            }
+        } else {
+            contextLines.add("current_user_location: unavailable");
         }
         if (explicitGeoPoint != null) {
             contextLines.add("explicit_request_location: city=" + safe(executionPlan == null ? null : executionPlan.getCity())
@@ -805,11 +823,7 @@ public class AiAgentServiceImpl implements IAiAgentService {
         if (!userLocation.available()) {
             return true;
         }
-        String currentAddress = StrUtil.blankToDefault(userLocation.address(), "");
-        if (StrUtil.isNotBlank(executionPlan.getCity()) && !currentAddress.contains(executionPlan.getCity())) {
-            return true;
-        }
-        return StrUtil.isNotBlank(executionPlan.getLocationHint()) && !currentAddress.contains(executionPlan.getLocationHint());
+        return true;
     }
 
     private BaiduMapGeoService.GeoPoint resolveExplicitGeoPoint(AgentExecutionPlan executionPlan, UserLocationContext userLocation) {
@@ -821,6 +835,33 @@ public class AiAgentServiceImpl implements IAiAgentService {
             city = userLocation.city();
         }
         return baiduMapGeoService.geocode(city, executionPlan.getLocationHint());
+    }
+
+    private String resolveReverseGeoAddress(BaiduMapGeoService.ReverseGeoPoint reverseGeoPoint) {
+        if (reverseGeoPoint == null) {
+            return null;
+        }
+        if (StrUtil.isNotBlank(reverseGeoPoint.formattedAddress())) {
+            return reverseGeoPoint.formattedAddress();
+        }
+        if (StrUtil.isNotBlank(reverseGeoPoint.business())) {
+            return reverseGeoPoint.business();
+        }
+        StringBuilder builder = new StringBuilder();
+        if (StrUtil.isNotBlank(reverseGeoPoint.city())) {
+            builder.append(reverseGeoPoint.city());
+        }
+        if (StrUtil.isNotBlank(reverseGeoPoint.district())) {
+            builder.append(reverseGeoPoint.district());
+        }
+        if (StrUtil.isNotBlank(reverseGeoPoint.street())) {
+            builder.append(reverseGeoPoint.street());
+        }
+        return builder.length() == 0 ? null : builder.toString();
+    }
+
+    private boolean isCurrentLocationQuestion(String message) {
+        return containsAny(StrUtil.blankToDefault(message, ""), CURRENT_LOCATION_CUES);
     }
 
     private ShopRecommendationQuery buildRecommendationQuery(String message,
@@ -1194,8 +1235,16 @@ public class AiAgentServiceImpl implements IAiAgentService {
                 + ", longTermMemoryHits=" + context.getLongTermMemoryHitCount()
                 + ", tokensBefore=" + context.getEstimatedTokensBefore()
                 + ", tokensAfter=" + context.getEstimatedTokensAfter()
-                + ", summaryUpdated=" + context.isSummaryUpdated() + ")");
+                + ", summaryUpdated=" + context.isSummaryUpdated()
+                + ", microCompactTriggered=" + context.isMicroCompactTriggered()
+                + ", microCompactedItems=" + context.getMicroCompactedItems()
+                + ", summaryKinds=" + context.getSelectedSummaryKinds()
+                + ", memoryKinds=" + context.getSelectedMemoryKinds()
+                + ", droppedContextKinds=" + context.getDroppedContextKinds() + ")");
         return context;
+    }
+
+    private record PromptBlock(String kind, String content) {
     }
 
     private void recordTurnQuietly(String storageConversationId,
@@ -1223,13 +1272,13 @@ public class AiAgentServiceImpl implements IAiAgentService {
         }
     }
 
-    private record UserLocationContext(String city, String address, Double longitude, Double latitude) {
+    private record UserLocationContext(String city, String address, Double longitude, Double latitude, Double accuracyMeters) {
         private static UserLocationContext empty() {
-            return new UserLocationContext("", "", null, null);
+            return new UserLocationContext("", "", null, null, null);
         }
 
         private boolean available() {
-            return StrUtil.isNotBlank(address) && longitude != null && latitude != null;
+            return longitude != null && latitude != null;
         }
     }
 }

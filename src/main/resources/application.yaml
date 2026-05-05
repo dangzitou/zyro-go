@@ -31,7 +31,7 @@ spring:
           time-between-eviction-runs: 10s
   ai:
     openai:
-      base-url: ${AI_BASE_URL:https://api2.henng.cn}
+      base-url: ${AI_BASE_URL:https://api.henng.cn}
       api-key: ${AI_API_KEY:sk-31bbb402929a905f8dbf9ae662cb731c62cc8148e516fd58ad3c8ea02c06a31e}
       chat:
         options:
@@ -81,11 +81,16 @@ hmdp:
       hard-token-budget: ${AI_CONTEXT_COMPRESSION_HARD_TOKEN_BUDGET:6500}
       summary-trigger-message-count: ${AI_CONTEXT_COMPRESSION_SUMMARY_TRIGGER_MESSAGE_COUNT:18}
       summary-max-tokens: ${AI_CONTEXT_COMPRESSION_SUMMARY_MAX_TOKENS:1200}
+      micro-compact-enabled: ${AI_CONTEXT_COMPRESSION_MICRO_COMPACT_ENABLED:true}
+      micro-compact-keep-recent-tool-rounds: ${AI_CONTEXT_COMPRESSION_MICRO_COMPACT_KEEP_RECENT_TOOL_ROUNDS:2}
       long-term-memory-enabled: ${AI_CONTEXT_COMPRESSION_LONG_TERM_MEMORY_ENABLED:true}
       memory-top-k: ${AI_CONTEXT_COMPRESSION_MEMORY_TOP_K:6}
       summary-model: ${AI_CONTEXT_COMPRESSION_SUMMARY_MODEL:}
       compression-model: ${AI_CONTEXT_COMPRESSION_COMPRESSION_MODEL:}
       fact-min-confidence: ${AI_CONTEXT_COMPRESSION_FACT_MIN_CONFIDENCE:0.72}
+      summary-tool-outcome-limit: ${AI_CONTEXT_COMPRESSION_SUMMARY_TOOL_OUTCOME_LIMIT:4}
+      summary-rag-takeaway-limit: ${AI_CONTEXT_COMPRESSION_SUMMARY_RAG_TAKEAWAY_LIMIT:3}
+      memory-expiry-days: ${AI_CONTEXT_COMPRESSION_MEMORY_EXPIRY_DAYS:30}
     knowledge-enabled: ${AI_KNOWLEDGE_ENABLED:true}
     knowledge-top-k: ${AI_KNOWLEDGE_TOP_K:4}
     default-conversation-prefix: agent-session
@@ -113,7 +118,7 @@ hmdp:
       top-n: ${AI_RERANK_TOP_N:5}
     restaurant-retrieval:
       enabled: ${AI_RESTAURANT_RETRIEVAL_ENABLED:true}
-      rebuild-on-startup: ${AI_RESTAURANT_RETRIEVAL_REBUILD_ON_STARTUP:true}
+      rebuild-on-startup: ${AI_RESTAURANT_RETRIEVAL_REBUILD_ON_STARTUP:false}
       store-file: ${AI_RESTAURANT_RETRIEVAL_STORE_FILE:data/ai/shop-vector-store.json}
       similarity-threshold: ${AI_RESTAURANT_RETRIEVAL_SIMILARITY_THRESHOLD:0.30}
       candidate-limit: ${AI_RESTAURANT_RETRIEVAL_CANDIDATE_LIMIT:12}

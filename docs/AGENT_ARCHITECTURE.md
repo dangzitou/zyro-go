@@ -195,3 +195,29 @@
 - `RAG` 不再承载博客、店铺、优惠券等半动态或强动态内容
 - `retrievalHits` 不再容易被误解为实时事实来源
 - 整个 Agent 更适合企业真实落地和后续治理
+## 10. Context Engineering v2
+
+This project now includes a second-generation context pipeline centered on
+stability rather than raw prompt length.
+
+Key upgrades:
+
+- `MicroCompact` runs before summary compaction to fold stale low-value
+  historical tool output into lightweight placeholders
+- long-term memory is now classified as `user_profile`,
+  `stable_preference`, or `hard_avoidance`
+- memory facts support expiry and stale filtering
+- assembled prompt context is trimmed by fixed priority instead of generic
+  append-and-truncate logic
+- system prompt assembly now uses internal prompt blocks, which prepares the
+  project for future prompt caching without changing the current Spring AI API
+
+Implementation entry points:
+
+- `ContextCompressionService`
+- `MemoryExtractionService`
+- `AiAgentServiceImpl.buildSystemPrompt(...)`
+
+Reference:
+
+- [CONTEXT_ENGINEERING_V2.md](./CONTEXT_ENGINEERING_V2.md)

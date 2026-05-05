@@ -53,8 +53,8 @@ public class ContextCompressionService {
             Rules:
             1. Keep stable user preferences and hard business constraints.
             2. Preserve location, budget, party size, wanted category and forbidden category when present.
-            3. Summarize tool outcomes briefly. Do not keep long candidate lists.
-            4. Keep unresolved questions in openThreads.
+            3. Summarize tool outcomes briefly and never keep candidate lists.
+            4. Keep only useful unresolved questions in openThreads.
             5. Use concise Chinese strings.
             6. Output valid JSON only.
             """;
@@ -99,12 +99,20 @@ public class ContextCompressionService {
         }
 
         List<Message> recentMessages = new ArrayList<Message>(chatMemory.get(conversationId));
-        ConversationSummary summary = chatContextRepository.loadConversationSummary(conversationId);
+        ConversationSummary summary = normalizeSummary(chatContextRepository.loadConversationSummary(conversationId));
         List<LongTermMemoryFact> memories = upsertLongTermMemories(userId, conversationId, currentMessage, executionPlan);
 
         int estimatedBefore = estimateTotalTokens(systemPrompt, currentMessage, prefetchedContext, retrievalHits, recentMessages, summary, memories);
-        boolean summaryUpdated = false;
+        List<String> microCompactedItems = new ArrayList<String>();
+        boolean microCompactTriggered = false;
+        if (Boolean.TRUE.equals(properties.getMicroCompactEnabled())) {
+            MicroCompactResult microCompactResult = microCompact(recentMessages, properties);
+            recentMessages = microCompactResult.messages();
+            microCompactedItems = microCompactResult.compactedItems();
+            microCompactTriggered = !microCompactedItems.isEmpty();
+        }
 
+        boolean summaryUpdated = false;
         if (shouldCompact(recentMessages, currentMessage, estimatedBefore, executionPlan, properties)) {
             CompactResult compactResult = compactConversation(conversationId, recentMessages, summary, executionPlan, properties);
             recentMessages = compactResult.recentMessages();
@@ -112,36 +120,39 @@ public class ContextCompressionService {
             summaryUpdated = compactResult.summaryUpdated();
         }
 
-        List<String> summaryDocs = selectSummaryDocs(summary, currentMessage, executionPlan);
-        List<LongTermMemoryFact> memoryHits = selectRelevantMemories(memories, currentMessage, executionPlan);
+        List<LongTermMemoryFact> filteredMemories = memoryExtractionService.filterRelevantFacts(memories, executionPlan, Instant.now());
+        List<SummarySlice> summarySlices = selectSummaryDocs(summary, currentMessage, executionPlan);
+        List<LongTermMemoryFact> memoryHits = selectRelevantMemories(filteredMemories, currentMessage, executionPlan);
         List<Message> recentToInject = tailMessages(recentMessages, properties.getRecentTurnPairs() * 2);
+        List<String> droppedContextKinds = new ArrayList<String>();
 
-        String promptContext = renderContext(summaryDocs, memoryHits, recentToInject);
+        AssemblyState state = new AssemblyState(summarySlices, memoryHits, recentToInject, droppedContextKinds);
+        String promptContext = renderContext(state.summarySlices, state.memoryHits, state.recentMessages);
         int estimatedAfter = estimateTotalTokens(systemPrompt, currentMessage, prefetchedContext, retrievalHits,
-                recentToInject, materializeSummary(summaryDocs), memoryHits);
+                state.recentMessages, materializeSummary(state.summarySlices), state.memoryHits);
 
-        while (estimatedAfter > properties.getHardTokenBudget()
-                && (!memoryHits.isEmpty() || !summaryDocs.isEmpty() || recentToInject.size() > 2)) {
-            if (!memoryHits.isEmpty()) {
-                memoryHits = new ArrayList<LongTermMemoryFact>(memoryHits.subList(0, memoryHits.size() - 1));
-            } else if (!summaryDocs.isEmpty()) {
-                summaryDocs = new ArrayList<String>(summaryDocs.subList(0, summaryDocs.size() - 1));
-            } else {
-                recentToInject = tailMessages(recentToInject, Math.max(2, recentToInject.size() - 2));
+        while (estimatedAfter > properties.getHardTokenBudget()) {
+            if (!dropLowestPriority(state)) {
+                break;
             }
-            promptContext = renderContext(summaryDocs, memoryHits, recentToInject);
+            promptContext = renderContext(state.summarySlices, state.memoryHits, state.recentMessages);
             estimatedAfter = estimateTotalTokens(systemPrompt, currentMessage, prefetchedContext, retrievalHits,
-                    recentToInject, materializeSummary(summaryDocs), memoryHits);
+                    state.recentMessages, materializeSummary(state.summarySlices), state.memoryHits);
         }
 
         return new AssembledChatContext(
                 promptContext,
-                recentToInject.size(),
-                summaryDocs.size(),
-                memoryHits.size(),
+                state.recentMessages.size(),
+                state.summarySlices.size(),
+                state.memoryHits.size(),
                 estimatedBefore,
                 estimatedAfter,
-                summaryUpdated
+                summaryUpdated,
+                microCompactTriggered,
+                microCompactedItems,
+                extractSummaryKinds(state.summarySlices),
+                extractMemoryKinds(state.memoryHits),
+                state.droppedContextKinds
         );
     }
 
@@ -163,7 +174,7 @@ public class ContextCompressionService {
         List<LongTermMemoryFact> memories = upsertLongTermMemories(userId, conversationId, message, executionPlan);
         if (current.size() >= properties.getSummaryTriggerMessageCount()) {
             compactConversation(conversationId, current, chatContextRepository.loadConversationSummary(conversationId), executionPlan, properties);
-        } else if (memories != null && !memories.isEmpty()) {
+        } else if (!memories.isEmpty()) {
             chatContextRepository.saveLongTermMemories(userId, memories);
         }
     }
@@ -193,14 +204,76 @@ public class ContextCompressionService {
                     || executionPlan.getPartySize() != null
                     || StrUtil.isNotBlank(executionPlan.getCity())
                     || StrUtil.isNotBlank(executionPlan.getLocationHint())
-                    || (executionPlan.getExcludedCategories() != null && !executionPlan.getExcludedCategories().isEmpty())
-                    || (executionPlan.getNegativePreferences() != null && !executionPlan.getNegativePreferences().isEmpty())) {
+                    || !safeList(executionPlan.getExcludedCategories()).isEmpty()
+                    || !safeList(executionPlan.getNegativePreferences()).isEmpty()) {
                 return true;
             }
         }
         String normalized = StrUtil.blankToDefault(currentMessage, "").toLowerCase(Locale.ROOT);
-        return normalized.contains("预算") || normalized.contains("不要") || normalized.contains("两个人")
-                || normalized.contains("约会") || normalized.contains("附近");
+        return normalized.contains("预算")
+                || normalized.contains("不要")
+                || normalized.contains("两个人")
+                || normalized.contains("约会")
+                || normalized.contains("附近");
+    }
+
+    private MicroCompactResult microCompact(List<Message> currentMessages, AiContextCompressionProperties properties) {
+        if (currentMessages == null || currentMessages.isEmpty()) {
+            return new MicroCompactResult(new ArrayList<Message>(), new ArrayList<String>());
+        }
+        int protectedCount = Math.max(2, properties.getRecentTurnPairs() * 2);
+        int keepRecentRounds = Math.max(1, properties.getMicroCompactKeepRecentToolRounds());
+        int protectedFromIndex = Math.max(0, currentMessages.size() - Math.max(protectedCount, keepRecentRounds * 2));
+        List<Message> compacted = new ArrayList<Message>();
+        List<String> compactedItems = new ArrayList<String>();
+        for (int i = 0; i < currentMessages.size(); i++) {
+            Message message = currentMessages.get(i);
+            if (i >= protectedFromIndex) {
+                compacted.add(message);
+                continue;
+            }
+            String text = StrUtil.blankToDefault(message.getText(), "");
+            String replacement = microCompactReplacement(message, text);
+            if (replacement != null) {
+                compactedItems.add(replacement);
+                compacted.add(copyMessage(message, replacement));
+            } else {
+                compacted.add(message);
+            }
+        }
+        return new MicroCompactResult(compacted, unique(compactedItems));
+    }
+
+    private String microCompactReplacement(Message message, String text) {
+        if (message instanceof UserMessage) {
+            return null;
+        }
+        String normalized = normalize(text);
+        if (normalized.isBlank()) {
+            return "旧回答已折叠";
+        }
+        if (normalized.contains("recommendation#")
+                || normalized.contains("shop#")
+                || normalized.contains("prefetched business facts")
+                || normalized.contains("background knowledge snippets")) {
+            return "旧业务检索结果已折叠并转入摘要";
+        }
+        if (normalized.contains("address=")
+                && normalized.contains("avgprice=")
+                && normalized.contains("couponsummary=")) {
+            return "旧店铺候选明细已折叠";
+        }
+        if (text.length() > 220) {
+            return "冗长历史回答已压缩，关键信息保留在摘要中";
+        }
+        return null;
+    }
+
+    private Message copyMessage(Message message, String replacement) {
+        if (message instanceof UserMessage) {
+            return new UserMessage(replacement);
+        }
+        return new AssistantMessage(replacement);
     }
 
     private CompactResult compactConversation(String conversationId,
@@ -214,7 +287,7 @@ public class ContextCompressionService {
                 ? new ArrayList<Message>(currentMessages.subList(0, currentMessages.size() - recent.size()))
                 : new ArrayList<Message>();
 
-        ConversationSummary mergedSummary = currentSummary == null ? new ConversationSummary() : currentSummary;
+        ConversationSummary mergedSummary = normalizeSummary(currentSummary);
         if (!older.isEmpty()) {
             ConversationSummary deltaSummary = summarizeMessages(older, executionPlan, mergedSummary);
             mergedSummary = mergeSummaries(mergedSummary, deltaSummary);
@@ -247,7 +320,7 @@ public class ContextCompressionService {
                         .block();
                 ConversationSummary parsed = parseSummary(content);
                 if (parsed != null && parsed.hasContent()) {
-                    return parsed;
+                    return normalizeSummary(parsed);
                 }
             } catch (Exception e) {
                 log.debug("Structured summary generation failed, fallback to heuristic summary: {}", e.getMessage());
@@ -278,7 +351,7 @@ public class ContextCompressionService {
         StringBuilder builder = new StringBuilder();
         builder.append("Current summary JSON:\n");
         try {
-            builder.append(objectMapper.writeValueAsString(currentSummary == null ? new ConversationSummary() : currentSummary));
+            builder.append(objectMapper.writeValueAsString(normalizeSummary(currentSummary)));
         } catch (Exception e) {
             builder.append("{}");
         }
@@ -298,16 +371,10 @@ public class ContextCompressionService {
     }
 
     private ConversationSummary heuristicSummary(List<Message> messages, AgentExecutionPlan executionPlan) {
-        ConversationSummary summary = new ConversationSummary();
+        AiContextCompressionProperties properties = aiProperties.getContextCompression();
+        ConversationSummary summary = normalizeSummary(new ConversationSummary());
         String allText = joinMessages(messages);
         summary.setUserGoal(lastUserMessage(messages));
-        summary.setPersistentPreferences(new ArrayList<String>());
-        summary.setHardConstraints(new ArrayList<String>());
-        summary.setNegativePreferences(new ArrayList<String>());
-        summary.setResolvedFacts(new ArrayList<String>());
-        summary.setOpenThreads(new ArrayList<String>());
-        summary.setToolOutcomes(new ArrayList<String>());
-        summary.setRagTakeaways(new ArrayList<String>());
 
         if (executionPlan != null) {
             if (StrUtil.isNotBlank(executionPlan.getCity())) {
@@ -338,27 +405,32 @@ public class ContextCompressionService {
 
         for (Message message : messages) {
             String text = StrUtil.blankToDefault(message.getText(), "");
-            if (message instanceof AssistantMessage) {
-                if (text.contains("推荐") || text.contains("地址") || text.contains("人均")) {
-                    summary.getToolOutcomes().add(trimForSummary(text));
-                }
-                if (text.contains("RAG") || text.contains("知识")) {
-                    summary.getRagTakeaways().add(trimForSummary(text));
-                }
+            if (!(message instanceof AssistantMessage)) {
+                continue;
+            }
+            if (containsAny(normalize(text), "recommendation#", "shop#", "avgprice=", "distance")) {
+                summary.getToolOutcomes().add(extractToolOutcome(text));
+            } else if (text.contains("推荐") || text.contains("地址") || text.contains("人均")) {
+                summary.getToolOutcomes().add(trimForSummary(text));
+            }
+            if (text.contains("RAG") || text.contains("知识")) {
+                summary.getRagTakeaways().add(trimForSummary(text));
             }
         }
+
         summary.setPersistentPreferences(unique(summary.getPersistentPreferences()));
         summary.setHardConstraints(unique(summary.getHardConstraints()));
         summary.setNegativePreferences(unique(summary.getNegativePreferences()));
         summary.setResolvedFacts(unique(summary.getResolvedFacts()));
-        summary.setToolOutcomes(limit(unique(summary.getToolOutcomes()), 4));
-        summary.setRagTakeaways(limit(unique(summary.getRagTakeaways()), 3));
+        summary.setToolOutcomes(limit(unique(summary.getToolOutcomes()), properties.getSummaryToolOutcomeLimit()));
+        summary.setRagTakeaways(limit(unique(summary.getRagTakeaways()), properties.getSummaryRagTakeawayLimit()));
         summary.setUpdatedAt(Instant.now());
         return summary;
     }
 
     private ConversationSummary mergeSummaries(ConversationSummary current, ConversationSummary delta) {
-        ConversationSummary merged = current == null ? new ConversationSummary() : current;
+        AiContextCompressionProperties properties = aiProperties.getContextCompression();
+        ConversationSummary merged = normalizeSummary(current);
         if (delta == null) {
             return merged;
         }
@@ -368,32 +440,32 @@ public class ContextCompressionService {
         merged.setPersistentPreferences(mergeStringLists(merged.getPersistentPreferences(), delta.getPersistentPreferences()));
         merged.setHardConstraints(mergeStringLists(merged.getHardConstraints(), delta.getHardConstraints()));
         merged.setNegativePreferences(mergeStringLists(merged.getNegativePreferences(), delta.getNegativePreferences()));
-        merged.setResolvedFacts(mergeStringLists(merged.getResolvedFacts(), delta.getResolvedFacts()));
-        merged.setOpenThreads(mergeStringLists(merged.getOpenThreads(), delta.getOpenThreads()));
-        merged.setToolOutcomes(limit(mergeStringLists(merged.getToolOutcomes(), delta.getToolOutcomes()), 6));
-        merged.setRagTakeaways(limit(mergeStringLists(merged.getRagTakeaways(), delta.getRagTakeaways()), 4));
+        merged.setResolvedFacts(mergeResolvedFacts(merged.getResolvedFacts(), delta.getResolvedFacts()));
+        merged.setOpenThreads(limit(mergeOpenThreads(merged.getOpenThreads(), delta.getOpenThreads()), 4));
+        merged.setToolOutcomes(limit(mergeStringLists(delta.getToolOutcomes(), merged.getToolOutcomes()), properties.getSummaryToolOutcomeLimit()));
+        merged.setRagTakeaways(limit(mergeStringLists(delta.getRagTakeaways(), merged.getRagTakeaways()), properties.getSummaryRagTakeawayLimit()));
         merged.setUpdatedAt(Instant.now());
         return merged;
     }
 
-    private List<String> selectSummaryDocs(ConversationSummary summary,
-                                           String currentMessage,
-                                           AgentExecutionPlan executionPlan) {
+    private List<SummarySlice> selectSummaryDocs(ConversationSummary summary,
+                                                 String currentMessage,
+                                                 AgentExecutionPlan executionPlan) {
         if (summary == null || !summary.hasContent()) {
-            return new ArrayList<String>();
+            return new ArrayList<SummarySlice>();
         }
-        List<String> docs = new ArrayList<String>();
+        List<SummarySlice> docs = new ArrayList<SummarySlice>();
         if (StrUtil.isNotBlank(summary.getUserGoal())) {
-            docs.add("user_goal: " + summary.getUserGoal());
+            docs.add(new SummarySlice("user_goal", "user_goal: " + summary.getUserGoal(), 1));
         }
-        addDocs(docs, "persistent_preference", summary.getPersistentPreferences());
-        addDocs(docs, "hard_constraint", summary.getHardConstraints());
-        addDocs(docs, "negative_preference", summary.getNegativePreferences());
-        addDocs(docs, "resolved_fact", summary.getResolvedFacts());
-        addDocs(docs, "open_thread", summary.getOpenThreads());
-        addDocs(docs, "tool_outcome", summary.getToolOutcomes());
-        addDocs(docs, "rag_takeaway", summary.getRagTakeaways());
-        return rankDocuments(resolveRankingQuery(currentMessage, executionPlan), docs, 5);
+        addDocs(docs, "persistent_preference", summary.getPersistentPreferences(), 3);
+        addDocs(docs, "hard_constraint", summary.getHardConstraints(), 1);
+        addDocs(docs, "negative_preference", summary.getNegativePreferences(), 1);
+        addDocs(docs, "resolved_fact", summary.getResolvedFacts(), 2);
+        addDocs(docs, "open_thread", summary.getOpenThreads(), 4);
+        addDocs(docs, "tool_outcome", summary.getToolOutcomes(), 5);
+        addDocs(docs, "rag_takeaway", summary.getRagTakeaways(), 6);
+        return rankSummarySlices(resolveRankingQuery(currentMessage, executionPlan), docs, 6);
     }
 
     private List<LongTermMemoryFact> selectRelevantMemories(List<LongTermMemoryFact> memories,
@@ -418,7 +490,30 @@ public class ContextCompressionService {
                 hits.add(fact);
             }
         }
+        hits.sort(Comparator.comparingInt(this::memoryPriority));
         return hits;
+    }
+
+    private List<SummarySlice> rankSummarySlices(String query, List<SummarySlice> slices, int limit) {
+        if (slices.isEmpty()) {
+            return slices;
+        }
+        List<String> docs = new ArrayList<String>();
+        Map<String, SummarySlice> index = new LinkedHashMap<String, SummarySlice>();
+        for (SummarySlice slice : slices) {
+            docs.add(slice.text());
+            index.put(slice.text(), slice);
+        }
+        List<String> rankedDocs = rankDocuments(query, docs, limit);
+        List<SummarySlice> ranked = new ArrayList<SummarySlice>();
+        for (String doc : rankedDocs) {
+            SummarySlice slice = index.get(doc);
+            if (slice != null) {
+                ranked.add(slice);
+            }
+        }
+        ranked.sort(Comparator.comparingInt(SummarySlice::priority));
+        return ranked;
     }
 
     private List<String> rankDocuments(String query, List<String> documents, int limit) {
@@ -461,8 +556,11 @@ public class ContextCompressionService {
                 score += Math.max(1D, term.length() / 2.0D);
             }
         }
-        if (normalizedDoc.contains("hard_constraint") || normalizedDoc.contains("avoidance")) {
-            score += 0.6D;
+        if (normalizedDoc.contains("hard_constraint") || normalizedDoc.contains("negative_preference")) {
+            score += 0.8D;
+        }
+        if (normalizedDoc.contains("resolved_fact") || normalizedDoc.contains("user_profile")) {
+            score += 0.4D;
         }
         return score;
     }
@@ -470,7 +568,7 @@ public class ContextCompressionService {
     private Set<String> extractTerms(String query) {
         String normalized = normalize(query);
         Set<String> terms = new LinkedHashSet<String>();
-        for (String token : normalized.split("[\\s,，。！？?!.:/\\\\|]+")) {
+        for (String token : normalized.split("[\\s,，。！？!.:/\\\\|]+")) {
             if (token.length() >= 2) {
                 terms.add(token);
             }
@@ -496,19 +594,20 @@ public class ContextCompressionService {
             if (executionPlan.getBudgetMax() != null) {
                 parts.add(String.valueOf(executionPlan.getBudgetMax()));
             }
+            parts.addAll(safeList(executionPlan.getNegativePreferences()));
         }
         parts.add(currentMessage);
         return String.join(" ", parts);
     }
 
-    private String renderContext(List<String> summaryDocs,
+    private String renderContext(List<SummarySlice> summaryDocs,
                                  List<LongTermMemoryFact> memoryHits,
                                  List<Message> recentMessages) {
         StringBuilder builder = new StringBuilder();
         if (!summaryDocs.isEmpty()) {
             builder.append("\nConversation summary context:\n");
-            for (String doc : summaryDocs) {
-                builder.append("- ").append(doc).append("\n");
+            for (SummarySlice doc : summaryDocs) {
+                builder.append("- ").append(doc.text()).append("\n");
             }
         }
         if (!memoryHits.isEmpty()) {
@@ -528,12 +627,17 @@ public class ContextCompressionService {
         return builder.toString().trim();
     }
 
-    private ConversationSummary materializeSummary(List<String> docs) {
-        ConversationSummary summary = new ConversationSummary();
-        if (docs == null) {
-            return summary;
+    private ConversationSummary materializeSummary(List<SummarySlice> docs) {
+        ConversationSummary summary = normalizeSummary(new ConversationSummary());
+        for (SummarySlice doc : docs) {
+            if ("hard_constraint".equals(doc.kind())) {
+                summary.getHardConstraints().add(doc.text());
+            } else if ("negative_preference".equals(doc.kind())) {
+                summary.getNegativePreferences().add(doc.text());
+            } else {
+                summary.getResolvedFacts().add(doc.text());
+            }
         }
-        summary.setResolvedFacts(new ArrayList<String>(docs));
         return summary;
     }
 
@@ -581,6 +685,67 @@ public class ContextCompressionService {
         return total;
     }
 
+    private boolean dropLowestPriority(AssemblyState state) {
+        for (int priority = 6; priority >= 1; priority--) {
+            int removed = removeSummaryByPriority(state.summarySlices, priority);
+            if (removed > 0) {
+                state.droppedContextKinds.add("summary:" + removedKind(priority));
+                return true;
+            }
+        }
+        if (!state.memoryHits.isEmpty()) {
+            LongTermMemoryFact removed = state.memoryHits.remove(state.memoryHits.size() - 1);
+            state.droppedContextKinds.add("memory:" + removed.getType());
+            return true;
+        }
+        if (state.recentMessages.size() > 2) {
+            state.recentMessages = tailMessages(state.recentMessages, state.recentMessages.size() - 2);
+            state.droppedContextKinds.add("recent_turns");
+            return true;
+        }
+        return false;
+    }
+
+    private int removeSummaryByPriority(List<SummarySlice> slices, int priority) {
+        for (int i = slices.size() - 1; i >= 0; i--) {
+            if (slices.get(i).priority() == priority) {
+                slices.remove(i);
+                return 1;
+            }
+        }
+        return 0;
+    }
+
+    private String removedKind(int priority) {
+        return switch (priority) {
+            case 6 -> "rag_takeaway";
+            case 5 -> "tool_outcome";
+            case 4 -> "open_thread";
+            case 3 -> "persistent_preference";
+            case 2 -> "resolved_fact";
+            default -> "hard_constraint";
+        };
+    }
+
+    private int memoryPriority(LongTermMemoryFact fact) {
+        if (fact == null || fact.getType() == null) {
+            return 10;
+        }
+        if (fact.getType().startsWith("avoidance")) {
+            return 1;
+        }
+        if (fact.getType().startsWith("profile.city")) {
+            return 2;
+        }
+        if (fact.getType().startsWith("profile.frequent_areas")) {
+            return 3;
+        }
+        if (fact.getType().startsWith("preference.price_band") || fact.getType().startsWith("preference.party_size")) {
+            return 4;
+        }
+        return 5;
+    }
+
     private List<Message> tailMessages(List<Message> messages, int keepCount) {
         if (messages == null || messages.isEmpty()) {
             return new ArrayList<Message>();
@@ -589,15 +754,52 @@ public class ContextCompressionService {
         return new ArrayList<Message>(messages.subList(fromIndex, messages.size()));
     }
 
-    private List<String> mergeStringLists(List<String> base, List<String> append) {
+    private List<String> mergeStringLists(List<String> first, List<String> second) {
         Set<String> merged = new LinkedHashSet<String>();
-        if (base != null) {
-            merged.addAll(base);
+        if (first != null) {
+            merged.addAll(first);
         }
-        if (append != null) {
-            merged.addAll(append);
+        if (second != null) {
+            merged.addAll(second);
         }
         return new ArrayList<String>(merged);
+    }
+
+    private List<String> mergeResolvedFacts(List<String> base, List<String> append) {
+        Map<String, String> merged = new LinkedHashMap<String, String>();
+        for (String value : safeList(base)) {
+            merged.put(factKey(value), value);
+        }
+        for (String value : safeList(append)) {
+            merged.put(factKey(value), value);
+        }
+        return new ArrayList<String>(merged.values());
+    }
+
+    private List<String> mergeOpenThreads(List<String> base, List<String> append) {
+        List<String> merged = new ArrayList<String>();
+        for (String value : safeList(base)) {
+            if (!containsClosedMarker(value)) {
+                merged.add(value);
+            }
+        }
+        for (String value : safeList(append)) {
+            if (!containsClosedMarker(value)) {
+                merged.add(value);
+            }
+        }
+        return unique(merged);
+    }
+
+    private boolean containsClosedMarker(String value) {
+        String normalized = normalize(value);
+        return normalized.contains("已解决") || normalized.contains("已确认") || normalized.contains("已完成");
+    }
+
+    private String factKey(String value) {
+        String normalized = normalize(value);
+        int index = normalized.indexOf(':');
+        return index > 0 ? normalized.substring(0, index) : normalized;
     }
 
     private List<String> splitTags(String value) {
@@ -605,7 +807,7 @@ public class ContextCompressionService {
             return Collections.emptyList();
         }
         Set<String> tags = new LinkedHashSet<String>();
-        for (String token : value.split("[,，]")) {
+        for (String token : value.split("[,，、/]")) {
             if (StrUtil.isNotBlank(token)) {
                 tags.add(token.trim());
             }
@@ -617,9 +819,9 @@ public class ContextCompressionService {
         return values == null ? new ArrayList<String>() : values;
     }
 
-    private void addDocs(List<String> docs, String prefix, List<String> values) {
+    private void addDocs(List<SummarySlice> docs, String prefix, List<String> values, int priority) {
         for (String value : safeList(values)) {
-            docs.add(prefix + ": " + value);
+            docs.add(new SummarySlice(prefix, prefix + ": " + value, priority));
         }
     }
 
@@ -655,20 +857,67 @@ public class ContextCompressionService {
         return normalized.substring(0, 100) + "...";
     }
 
+    private String extractToolOutcome(String text) {
+        String normalized = trimForSummary(text);
+        if (normalized.contains("recommendation#") || normalized.contains("shop#")) {
+            return "已执行过店铺检索，候选结果已写入摘要";
+        }
+        return normalized;
+    }
+
     private Long extractBudget(String source) {
         Matcher matcher = BUDGET_PATTERN.matcher(StrUtil.blankToDefault(source, ""));
         return matcher.find() ? Long.parseLong(matcher.group(1)) : null;
+    }
+
+    private ConversationSummary normalizeSummary(ConversationSummary summary) {
+        ConversationSummary normalized = summary == null ? new ConversationSummary() : summary;
+        if (normalized.getPersistentPreferences() == null) {
+            normalized.setPersistentPreferences(new ArrayList<String>());
+        }
+        if (normalized.getHardConstraints() == null) {
+            normalized.setHardConstraints(new ArrayList<String>());
+        }
+        if (normalized.getNegativePreferences() == null) {
+            normalized.setNegativePreferences(new ArrayList<String>());
+        }
+        if (normalized.getResolvedFacts() == null) {
+            normalized.setResolvedFacts(new ArrayList<String>());
+        }
+        if (normalized.getOpenThreads() == null) {
+            normalized.setOpenThreads(new ArrayList<String>());
+        }
+        if (normalized.getToolOutcomes() == null) {
+            normalized.setToolOutcomes(new ArrayList<String>());
+        }
+        if (normalized.getRagTakeaways() == null) {
+            normalized.setRagTakeaways(new ArrayList<String>());
+        }
+        return normalized;
     }
 
     private String normalize(String value) {
         return StrUtil.blankToDefault(value, "").trim().toLowerCase(Locale.ROOT);
     }
 
-    private <T> List<T> limit(List<T> values, int limit) {
-        if (values == null || values.size() <= limit) {
+    private boolean containsAny(String source, String... values) {
+        if (source == null) {
+            return false;
+        }
+        for (String value : values) {
+            if (source.contains(value)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private <T> List<T> limit(List<T> values, Integer limit) {
+        int safeLimit = limit == null ? Integer.MAX_VALUE : limit;
+        if (values == null || values.size() <= safeLimit) {
             return values == null ? new ArrayList<T>() : values;
         }
-        return new ArrayList<T>(values.subList(0, limit));
+        return new ArrayList<T>(values.subList(0, safeLimit));
     }
 
     private List<String> unique(List<String> values) {
@@ -678,8 +927,48 @@ public class ContextCompressionService {
         return new ArrayList<String>(new LinkedHashSet<String>(values));
     }
 
+    private List<String> extractSummaryKinds(List<SummarySlice> slices) {
+        List<String> kinds = new ArrayList<String>();
+        for (SummarySlice slice : slices) {
+            kinds.add(slice.kind());
+        }
+        return unique(kinds);
+    }
+
+    private List<String> extractMemoryKinds(List<LongTermMemoryFact> memoryHits) {
+        List<String> kinds = new ArrayList<String>();
+        for (LongTermMemoryFact fact : memoryHits) {
+            kinds.add(fact.getType());
+        }
+        return unique(kinds);
+    }
+
     private record CompactResult(List<Message> recentMessages,
                                  ConversationSummary summary,
                                  boolean summaryUpdated) {
+    }
+
+    private record MicroCompactResult(List<Message> messages,
+                                      List<String> compactedItems) {
+    }
+
+    private record SummarySlice(String kind, String text, int priority) {
+    }
+
+    private static class AssemblyState {
+        private List<SummarySlice> summarySlices;
+        private List<LongTermMemoryFact> memoryHits;
+        private List<Message> recentMessages;
+        private final List<String> droppedContextKinds;
+
+        private AssemblyState(List<SummarySlice> summarySlices,
+                              List<LongTermMemoryFact> memoryHits,
+                              List<Message> recentMessages,
+                              List<String> droppedContextKinds) {
+            this.summarySlices = new ArrayList<SummarySlice>(summarySlices);
+            this.memoryHits = new ArrayList<LongTermMemoryFact>(memoryHits);
+            this.recentMessages = new ArrayList<Message>(recentMessages);
+            this.droppedContextKinds = droppedContextKinds;
+        }
     }
 }
