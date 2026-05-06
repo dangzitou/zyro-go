@@ -75,6 +75,12 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
     @Resource
     private StringRedisTemplate stringRedisTemplate;
 
+    @Resource
+    private com.hmdp.ai.NegativePreferenceHandler negativePreferenceHandler;
+
+    @Resource
+    private com.hmdp.ai.RecommendationReasonBuilder recommendationReasonBuilder;
+
     /**
      * 推荐链路分成三步：
      * 1. 先做候选召回，尽量把“附近 + 类目 + 关键词”相关的店捞出来。
@@ -498,6 +504,12 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
     }
 
     private List<String> buildReasonTags(Shop shop, ShopRecommendationDTO dto, List<Voucher> vouchers, List<Blog> blogs, String keyword) {
+        if (recommendationReasonBuilder != null) {
+            // Use enhanced reason builder
+            return recommendationReasonBuilder.buildReasons(shop, dto, vouchers, blogs, null, keyword);
+        }
+
+        // Fallback to legacy implementation
         List<String> tags = new ArrayList<String>();
         if (dto.getScore() != null && dto.getScore() >= 4.5D) {
             tags.add("high_rating");
@@ -735,16 +747,37 @@ public class ShopRecommendationServiceImpl implements IShopRecommendationService
         if (shop == null || negativePreferences == null || negativePreferences.isEmpty()) {
             return false;
         }
-        String text = normalizeKeyword(StrUtil.nullToEmpty(shop.getName()) + " "
-                + StrUtil.nullToEmpty(shop.getArea()) + " "
-                + StrUtil.nullToEmpty(shop.getAddress()));
+        if (negativePreferenceHandler == null) {
+            // Fallback to legacy implementation
+            String text = normalizeKeyword(StrUtil.nullToEmpty(shop.getName()) + " "
+                    + StrUtil.nullToEmpty(shop.getArea()) + " "
+                    + StrUtil.nullToEmpty(shop.getAddress()));
+            for (String negativePreference : negativePreferences) {
+                if (StrUtil.isBlank(negativePreference)) {
+                    continue;
+                }
+                if ("太辣".equals(negativePreference) && (text.contains("辣") || text.contains("麻辣"))) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // Use enhanced negative preference handler
         for (String negativePreference : negativePreferences) {
             if (StrUtil.isBlank(negativePreference)) {
                 continue;
             }
-            if ("太辣".equals(negativePreference) && (text.contains("辣") || text.contains("麻辣"))) {
+            // Check text-based preferences
+            if (negativePreferenceHandler.matchesNegativePreference(
+                    shop.getName(), shop.getArea(), shop.getAddress(), negativePreference)) {
                 return true;
             }
+            // Check distance-based preferences
+            if (negativePreferenceHandler.matchesDistancePreference(shop.getDistance(), negativePreference)) {
+                return true;
+            }
+            // Check price-based preferences (will be checked in filter stage with budget context)
         }
         return false;
     }

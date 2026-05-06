@@ -123,24 +123,30 @@ public class AgentPlanningServiceImpl implements IAgentPlanningService {
     private final LocationTextParser locationTextParser;
     private final IShopSubCategoryService shopSubCategoryService;
     private final OpenAiCompatibleStreamBridge openAiCompatibleStreamBridge;
+    private final com.hmdp.ai.NegativePreferenceHandler negativePreferenceHandler;
 
     @Autowired
     public AgentPlanningServiceImpl(AiProperties aiProperties,
                                     ObjectProvider<ChatClient.Builder> chatClientBuilderProvider,
                                     LocationTextParser locationTextParser,
                                     ObjectProvider<IShopSubCategoryService> shopSubCategoryServiceProvider,
-                                    ObjectProvider<OpenAiCompatibleStreamBridge> streamBridgeProvider) {
+                                    ObjectProvider<OpenAiCompatibleStreamBridge> streamBridgeProvider,
+                                    ObjectProvider<com.hmdp.ai.NegativePreferenceHandler> negativePreferenceHandlerProvider) {
         this.aiProperties = aiProperties;
         this.chatClientBuilderProvider = chatClientBuilderProvider;
         this.locationTextParser = locationTextParser;
         this.shopSubCategoryService = shopSubCategoryServiceProvider.getIfAvailable();
         this.openAiCompatibleStreamBridge = streamBridgeProvider.getIfAvailable();
+        this.negativePreferenceHandler = negativePreferenceHandlerProvider.getIfAvailable();
     }
 
     public AgentPlanningServiceImpl(AiProperties aiProperties,
                                     ObjectProvider<ChatClient.Builder> chatClientBuilderProvider,
                                     LocationTextParser locationTextParser) {
-        this(aiProperties, chatClientBuilderProvider, locationTextParser, new org.springframework.beans.factory.support.StaticListableBeanFactory().getBeanProvider(IShopSubCategoryService.class), new org.springframework.beans.factory.support.StaticListableBeanFactory().getBeanProvider(OpenAiCompatibleStreamBridge.class));
+        this(aiProperties, chatClientBuilderProvider, locationTextParser, 
+             new org.springframework.beans.factory.support.StaticListableBeanFactory().getBeanProvider(IShopSubCategoryService.class), 
+             new org.springframework.beans.factory.support.StaticListableBeanFactory().getBeanProvider(OpenAiCompatibleStreamBridge.class),
+             new org.springframework.beans.factory.support.StaticListableBeanFactory().getBeanProvider(com.hmdp.ai.NegativePreferenceHandler.class));
     }
 
     public AgentPlanningServiceImpl(AiProperties aiProperties,
@@ -541,6 +547,12 @@ public class AgentPlanningServiceImpl implements IAgentPlanningService {
     }
 
     private List<String> detectNegativePreferences(String message) {
+        if (negativePreferenceHandler != null) {
+            // Use enhanced negative preference handler
+            return negativePreferenceHandler.extractNegativePreferences(message);
+        }
+
+        // Fallback to legacy implementation
         Set<String> preferences = new LinkedHashSet<String>();
         String normalized = normalize(message);
         if (containsAny(normalized, "别太贵", "不要太贵", "不想太贵")) {
